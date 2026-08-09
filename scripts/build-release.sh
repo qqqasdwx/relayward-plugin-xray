@@ -23,6 +23,9 @@ mkdir -p "$OUTPUT_DIRECTORY"
 CENTER="$OUTPUT_DIRECTORY/relayward-plugin-xray-center-linux-amd64"
 NODE="$OUTPUT_DIRECTORY/relayward-plugin-xray-node-linux-amd64"
 UI="$OUTPUT_DIRECTORY/relayward-plugin-xray-ui.tar.gz"
+UI_FILE_LIST="$OUTPUT_DIRECTORY/.ui-files"
+UI_TAR="$OUTPUT_DIRECTORY/.ui.tar"
+UI_ENTRIES="$OUTPUT_DIRECTORY/.ui-entries"
 npm --prefix "$ROOT/ui" run build
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath -buildvcs=false \
@@ -34,8 +37,25 @@ if [ "$("$CENTER" version)" != "$VERSION" ]; then
 fi
 cp "$CENTER" "$NODE"
 chmod 0755 "$CENTER" "$NODE"
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-    -cf - -C "$ROOT/ui/dist" . | gzip -n > "$UI"
+(
+    cd "$ROOT/ui/dist"
+    find . -mindepth 1 -maxdepth 1 -printf '%f\0' | LC_ALL=C sort -z > "$UI_FILE_LIST"
+    [ -s "$UI_FILE_LIST" ]
+    tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+        --null --files-from="$UI_FILE_LIST" -cf "$UI_TAR"
+)
+gzip -n -c "$UI_TAR" > "$UI"
+tar -tzf "$UI" > "$UI_ENTRIES"
+grep -Fxq 'index.html' "$UI_ENTRIES"
+while IFS= read -r entry; do
+    case "$entry" in
+        ''|.|./|./*|/*|../*|*/../*|*\\*)
+            echo "unsafe plugin UI archive entry: $entry" >&2
+            exit 1
+            ;;
+    esac
+done < "$UI_ENTRIES"
+rm -f "$UI_FILE_LIST" "$UI_TAR" "$UI_ENTRIES"
 go run ./cmd/relayward-plugin-xray-release -dist "$OUTPUT_DIRECTORY" -version "$VERSION"
 (
     cd "$OUTPUT_DIRECTORY"
