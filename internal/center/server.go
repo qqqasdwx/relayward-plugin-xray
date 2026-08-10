@@ -111,6 +111,13 @@ type saveConfigurationRequest struct {
 	Configuration      config.EditableConfiguration `json:"configuration"`
 }
 
+type nodeSummary struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Enabled   bool   `json:"enabled"`
+	Connected bool   `json:"connected"`
+}
+
 func (server *Server) listNodes(ctx context.Context) (any, error) {
 	response, err := server.host.ListNodes(ctx, &centerpluginv1.ListNodesRequest{})
 	if err != nil {
@@ -119,7 +126,13 @@ func (server *Server) listNodes(ctx context.Context) (any, error) {
 	if err := centerpluginv1.ValidateListNodesResponse(response); err != nil {
 		return nil, status.Error(codes.Internal, "Relayward returned invalid node state")
 	}
-	return map[string]any{"nodes": response.Nodes}, nil
+	nodes := make([]nodeSummary, len(response.Nodes))
+	for index, node := range response.Nodes {
+		nodes[index] = nodeSummary{
+			ID: node.Id, Name: node.Name, Enabled: node.Enabled, Connected: node.Connected,
+		}
+	}
+	return map[string]any{"nodes": nodes}, nil
 }
 
 func (server *Server) getConfiguration(ctx context.Context, raw []byte) (any, error) {

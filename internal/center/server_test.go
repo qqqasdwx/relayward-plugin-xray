@@ -68,7 +68,7 @@ func (host *hostStub) ReplaceServices(_ context.Context, request *centerpluginv1
 
 func (*hostStub) ListNodes(context.Context, *centerpluginv1.ListNodesRequest, ...grpc.CallOption) (*centerpluginv1.ListNodesResponse, error) {
 	return &centerpluginv1.ListNodesResponse{Nodes: []*centerpluginv1.Node{{
-		Id: "10000000-0000-4000-8000-000000000001", Name: "Edge", Enabled: true, Connected: true,
+		Id: "10000000-0000-4000-8000-000000000001", Name: "Edge",
 	}}}, nil
 }
 
@@ -108,7 +108,8 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 		t.Fatalf("service-types.list = %s, %v", serviceTypes.GetJson(), err)
 	}
 	nodes, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "nodes.list", Json: []byte(`{}`)})
-	if err != nil || !json.Valid(nodes.GetJson()) {
+	if err != nil || string(nodes.GetJson()) !=
+		`{"nodes":[{"id":"10000000-0000-4000-8000-000000000001","name":"Edge","enabled":false,"connected":false}]}` {
 		t.Fatalf("nodes.list = %s, %v", nodes.GetJson(), err)
 	}
 	nodeID := "10000000-0000-4000-8000-000000000001"
