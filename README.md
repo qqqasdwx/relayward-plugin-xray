@@ -10,7 +10,7 @@
 
 - Linux AMD64 center and node artifacts
 - responsive Simplified Chinese and English administration page
-- multiple independent VLESS + REALITY + TCP Vision services per node
+- multiple independent VLESS + REALITY + RAW Vision inbounds per node
 - official stable `XTLS/Xray-core` release resolution
 - bounded download with exact size and SHA-256 verification
 - private, immutable Xray version installations
@@ -25,7 +25,7 @@
 - VLESS URI, Mihomo, and sing-box subscription contributions
 - Relayward generation, digest, and health reporting
 
-The current runtime supports up to 64 independently identified VLESS + REALITY + TCP Vision services, 128 static routing rules, and 16 ordered DNS servers per node. Additional outbound types, additional protocols and transports, certificates, and full access-log collection are not implemented.
+The current runtime supports up to 64 independently identified VLESS + REALITY + RAW Vision inbounds, 128 static routing rules, and 16 ordered DNS servers per node. Additional outbound types, protocols, transports, certificates, and full access-log collection are not implemented.
 
 Recent activity is an online-presence signal rather than a full request log. While an authorization remains online, the plugin emits at most one accepted activity event per authorization, service, and source IP every 30 seconds. The stream ID, sequence cursor, unacknowledged events, and refresh index are stored atomically in a private state file so Agent retries and plugin restarts do not create sequence gaps. Dynamic blocks match authorization email, inbound service, and one source IP together, avoiding collateral blocking of another authorization behind the same NAT. Runtime routing replacement always rebuilds the complete managed rule set in API, dynamic-block, then static-rule order, so a static direct rule cannot bypass a Relayward soft IP block.
 
@@ -41,26 +41,25 @@ Version:           an existing release number without the leading v, for example
 GitHub token:      leave empty for this public repository
 ```
 
-Select **Check release**, inspect the manifest and artifacts, approve all three requested permissions, and install the plugin:
+Select **Check release**, inspect the manifest and artifacts, approve both requested permissions, and install the plugin:
 
 - `core.node_plugins.configure` reads and publishes Xray configuration for managed nodes.
-- `core.nodes.read` lists managed nodes in the plugin administration page.
 - `core.services.write` publishes Xray services for Relayward authorization bindings.
 
 After installation, the plugin must report `active` and `healthy` before a node is configured.
 
-## First Service
+## First Inbound
 
-1. Open the installed **Relayward Xray** plugin and select an enrolled, online node.
-2. Select a stable official Xray version and add a VLESS + REALITY service.
+1. Open **Nodes**, view an enrolled, online node, and select its **Xray** tab.
+2. Select a stable official Xray version and add a VLESS + RAW + REALITY inbound.
 3. Review the listener, public host and port, REALITY target and server names. Configure routing and DNS only when required.
-4. Save the node configuration. The Agent installs the node artifact, the plugin downloads and verifies the official Xray release, starts Xray, and publishes the service catalog to Relayward.
+4. Save the node configuration. The Agent installs the node artifact, the plugin downloads and verifies the official Xray release, starts Xray, and publishes the inbound through Relayward's internal service catalog.
 5. Wait until **Plugins > Node instances** reports the desired generation as applied and the runtime as running.
 6. Open the configured TCP port in the node firewall, provider firewall, and any NAT port mapping. Relayward and this plugin do not modify host firewall rules.
 7. In Relayward, create a user and a node authorization, then use **Manage services** to bind the authorization to the published Xray service.
 8. Open the authorization's subscription link and select the required VLESS URI, Mihomo, or sing-box output.
 
-Verify that the subscription contains the configured public host and port, then connect a real client through the service. Relayward should report the authorization as active, update traffic counters, and show recent accepted activity after traffic is generated.
+Verify that the subscription contains the configured public host and port, then connect a real client through the inbound. Relayward should report the authorization as active, update traffic counters, and show recent accepted activity after traffic is generated.
 
 ## Configuration
 
@@ -81,13 +80,40 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
       "port": 443,
       "public_host": "edge.example.com",
       "public_port": 443,
+      "tcp": {
+        "accept_proxy_protocol": false,
+        "header": {
+          "type": "none"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "dest_override": ["http", "tls", "quic", "fakedns"],
+        "metadata_only": false,
+        "route_only": false,
+        "ips_excluded": [],
+        "domains_excluded": []
+      },
       "vless_reality": {
+        "decryption": "none",
+        "encryption": "none",
+        "test_seed": [],
+        "fallbacks": [],
+        "show": false,
+        "xver": 0,
         "target": "addons.mozilla.org:443",
         "server_names": ["addons.mozilla.org"],
         "private_key": "base64url-encoded-X25519-private-key",
         "short_ids": ["0123456789abcdef"],
+        "min_client_version": "1.0.0",
+        "max_client_version": "",
+        "max_time_diff": 0,
+        "mldsa65_seed": "",
+        "mldsa65_verify": "",
+        "master_key_log": "",
         "flow": "xtls-rprx-vision",
-        "fingerprint": "chrome"
+        "fingerprint": "chrome",
+        "spider_x": "/"
       }
     }
   ],
@@ -131,17 +157,17 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
 }
 ```
 
-Each service keeps listener identity and public endpoint fields at the common service level. Protocol-specific fields are stored in the matching typed configuration object, currently `vless_reality`. The service-type catalog declares runtime and subscription capabilities, and conformance tests require every registered type to implement each declared layer before it can be added.
+The administration UI consistently calls these entries inbounds. The persisted `services[]` array and `service_id` fields are Relayward's internal cross-plugin contract. Each entry keeps the inbound identity and public endpoint at that contract level, while protocol-specific fields are stored in `vless_reality`.
 
-Each service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Services are stored in service-ID order. The administration page generates a node credential seed and independent REALITY secrets for each new service. Editing a service preserves its secrets by service ID; deleting a service removes them.
+Each internal service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Entries are stored in service-ID order. The administration page generates a node credential seed and independent REALITY secrets for each new inbound. Editing an inbound preserves its secrets by ID; deleting it removes them.
 
-Static routing rules retain their configured order and have stable rule IDs. Values within one match category are alternatives, while every populated category on a rule must match. A domain value matches that domain and its subdomains; raw Xray expressions and regular expressions are not accepted. IP matches must use canonical IPv4 or IPv6 CIDR notation. Protocol matches are limited to `http`, `tls`, `quic`, and `bittorrent`; Xray reports HTTP/1 traffic as `http1`, which is covered by its `http` protocol-prefix matcher. Rules may send matching traffic only to the built-in `direct` or `blocked` outbound. Domain or protocol rules enable route-only HTTP, TLS, and QUIC sniffing on enabled service inbounds, preserving the original connection target while making the sniffed destination available to routing.
+Static routing rules retain their configured order and have stable rule IDs. Values within one match category are alternatives, while every populated category on a rule must match. A domain value matches that domain and its subdomains; raw Xray expressions and regular expressions are not accepted. IP matches must use canonical IPv4 or IPv6 CIDR notation. Protocol matches are limited to `http`, `tls`, `quic`, and `bittorrent`; Xray reports HTTP/1 traffic as `http1`, which is covered by its `http` protocol-prefix matcher. Rules may send matching traffic only to the built-in `direct` or `blocked` outbound. Domain or protocol rules enable route-only HTTP, TLS, and QUIC sniffing on enabled inbounds, preserving the original connection target while making the sniffed destination available to routing.
 
 DNS is disabled unless explicitly enabled. Enabling it makes Xray use the configured resolver list for routing fallback and direct outbound domain resolution; disabling it preserves the previous `AsIs` direct-outbound behavior. The global query strategy is `use-ip`, `use-ipv4`, or `use-ipv6`. Servers retain their configured order and may use the system resolver, classic UDP, local TCP, or local DNS-over-HTTPS. UDP and TCP endpoints require a canonical IP address and explicit port. DNS-over-HTTPS endpoints require a credential-free HTTPS URL and are rendered in Xray local mode to avoid recursive bootstrap through the configured resolver chain.
 
 An empty server domain list makes that server a general fallback resolver. A populated list contains lowercase domain suffixes and restricts the server to those domains and their subdomains. When at least one domain-specific server matches, general fallback servers are not queried for that lookup. Disabled servers remain editable in Relayward but are omitted from the generated Xray configuration.
 
-Unknown fields, prerelease Xray versions, duplicate service, rule, or DNS server IDs, conflicting listeners, non-domain REALITY targets, noncanonical addresses or CIDRs, insecure DNS-over-HTTPS URLs, unsupported routing expressions, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
+Unknown fields, prerelease Xray versions, duplicate inbound, rule, or DNS server IDs, conflicting listeners, invalid REALITY targets, noncanonical addresses or CIDRs, insecure DNS-over-HTTPS URLs, unsupported routing expressions, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
 
 The target is a starting value, not a universal deployment choice. It must be reachable from the node, support TLS 1.3, and complete a real REALITY handshake with the selected Xray release; a successful TCP or ordinary TLS probe alone is insufficient.
 

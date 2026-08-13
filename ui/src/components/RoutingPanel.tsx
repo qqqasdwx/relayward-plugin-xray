@@ -20,11 +20,11 @@ interface RoutingPanelProps {
 
 export function RoutingPanel({ rules, busy, t, onAdd, onEdit, onDelete, onMove }: RoutingPanelProps) {
   return (
-    <div className="grid gap-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid gap-1">
+    <div className="grid min-w-0 gap-6">
+      <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="grid min-w-0 gap-1">
           <h2 className="font-semibold">{t("Static routing rules")}</h2>
-          <p className="text-sm text-muted-foreground">{t("Rules are evaluated from top to bottom after Relayward dynamic blocks")}</p>
+          <p className="break-words text-sm text-muted-foreground">{t("Rules are evaluated from top to bottom after Relayward dynamic blocks")}</p>
         </div>
         <Button type="button" disabled={busy} onClick={onAdd}><Plus />{t("Add rule")}</Button>
       </div>
@@ -32,9 +32,9 @@ export function RoutingPanel({ rules, busy, t, onAdd, onEdit, onDelete, onMove }
       {rules.length === 0 ? (
         <EmptyList title={t("No static routing rules")} detail={t("Unmatched traffic uses the direct outbound")} />
       ) : (
-        <div className="divide-y rounded-lg border">
+        <div className="min-w-0 divide-y rounded-lg border">
           {rules.map((rule, index) => (
-            <article key={rule.rule_id} className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)_auto] md:items-center">
+            <article key={rule.rule_id} className="grid min-w-0 gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)_auto] md:items-center">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <strong className="truncate text-sm font-medium">{rule.display_name}</strong>
@@ -43,7 +43,7 @@ export function RoutingPanel({ rules, busy, t, onAdd, onEdit, onDelete, onMove }
                 </div>
                 <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{rule.rule_id}</p>
               </div>
-              <p className="text-sm text-muted-foreground">
+              <p className="min-w-0 break-words text-sm text-muted-foreground">
                 {t("Domains {domains} · CIDRs {cidrs} · Protocols {protocols}", {
                   domains: rule.domains.length,
                   cidrs: rule.ip_cidrs.length,

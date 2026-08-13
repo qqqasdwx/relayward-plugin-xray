@@ -1,7 +1,9 @@
 package xrayconfig
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Relayward/relayward-plugin-xray/internal/config"
@@ -157,6 +159,159 @@ func TestRenderOmitsDisabledServices(t *testing.T) {
 	}
 }
 
+func TestRenderAppliesInboundTransportRealityAndSniffingSettings(t *testing.T) {
+	t.Parallel()
+	value := testConfiguration(t)
+	service := &value.Services[0]
+	service.TCP = config.TCPSettings{
+		AcceptProxyProtocol: true,
+		Header: config.TCPHeader{Type: config.TCPHeaderHTTP,
+			Request:  &config.TCPHTTPRequest{Version: "1.1", Method: "GET", Path: []string{"/edge"}, Headers: map[string][]string{"Host": {"addons.mozilla.org"}}},
+			Response: &config.TCPHTTPResponse{Version: "1.1", Status: "200", Reason: "OK", Headers: map[string][]string{"Content-Type": {"text/html"}}},
+		},
+	}
+	service.Sniffing = config.Sniffing{
+		Enabled: true, DestOverride: []string{"http", "tls"}, MetadataOnly: true,
+		RouteOnly: true, IPsExcluded: []string{"geoip:private"}, DomainsExcluded: []string{"domain:example.com"},
+	}
+	service.VLESSReality.Show = true
+	service.VLESSReality.Xver = 2
+	service.VLESSReality.MinClientVersion = "1.0.0"
+	service.VLESSReality.MaxClientVersion = "26.3.27"
+	service.VLESSReality.MaxTimeDiff = 1000
+	raw, err := Render(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated struct {
+		Inbounds []struct {
+			Tag            string `json:"tag"`
+			StreamSettings struct {
+				TCPSettings struct {
+					AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
+					Header              struct {
+						Type    string `json:"type"`
+						Request struct {
+							Path []string `json:"path"`
+						} `json:"request"`
+					} `json:"header"`
+				} `json:"tcpSettings"`
+				RealitySettings struct {
+					Show             bool   `json:"show"`
+					Xver             uint8  `json:"xver"`
+					MinClientVersion string `json:"minClientVer"`
+					MaxClientVersion string `json:"maxClientVer"`
+					MaxTimeDiff      uint64 `json:"maxTimeDiff"`
+				} `json:"realitySettings"`
+			} `json:"streamSettings"`
+			Sniffing struct {
+				Enabled      bool     `json:"enabled"`
+				MetadataOnly bool     `json:"metadataOnly"`
+				IPsExcluded  []string `json:"ipsExcluded"`
+			} `json:"sniffing"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(raw, &generated); err != nil {
+		t.Fatal(err)
+	}
+	var inbound *struct {
+		Tag            string `json:"tag"`
+		StreamSettings struct {
+			TCPSettings struct {
+				AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
+				Header              struct {
+					Type    string `json:"type"`
+					Request struct {
+						Path []string `json:"path"`
+					} `json:"request"`
+				} `json:"header"`
+			} `json:"tcpSettings"`
+			RealitySettings struct {
+				Show             bool   `json:"show"`
+				Xver             uint8  `json:"xver"`
+				MinClientVersion string `json:"minClientVer"`
+				MaxClientVersion string `json:"maxClientVer"`
+				MaxTimeDiff      uint64 `json:"maxTimeDiff"`
+			} `json:"realitySettings"`
+		} `json:"streamSettings"`
+		Sniffing struct {
+			Enabled      bool     `json:"enabled"`
+			MetadataOnly bool     `json:"metadataOnly"`
+			IPsExcluded  []string `json:"ipsExcluded"`
+		} `json:"sniffing"`
+	}
+	for index := range generated.Inbounds {
+		if generated.Inbounds[index].Tag == service.ServiceID {
+			inbound = &generated.Inbounds[index]
+		}
+	}
+	if inbound == nil || !inbound.StreamSettings.TCPSettings.AcceptProxyProtocol || inbound.StreamSettings.TCPSettings.Header.Type != "http" ||
+		inbound.StreamSettings.TCPSettings.Header.Request.Path[0] != "/edge" || !inbound.StreamSettings.RealitySettings.Show ||
+		inbound.StreamSettings.RealitySettings.Xver != 2 || inbound.StreamSettings.RealitySettings.MinClientVersion != "1.0.0" ||
+		inbound.StreamSettings.RealitySettings.MaxClientVersion != "26.3.27" || inbound.StreamSettings.RealitySettings.MaxTimeDiff != 1000 ||
+		!inbound.Sniffing.Enabled || !inbound.Sniffing.MetadataOnly || inbound.Sniffing.IPsExcluded[0] != "geoip:private" {
+		t.Fatalf("generated inbound = %+v", inbound)
+	}
+}
+
+func TestRenderEmitsCompleteSupportedInboundSettings(t *testing.T) {
+	t.Parallel()
+	value := testConfiguration(t)
+	service := &value.Services[0]
+	service.Sockopt = &config.SocketSettings{
+		Mark: 10, TCPFastOpen: true, TProxy: config.TProxyRedirect, AcceptProxyProtocol: true,
+		TCPMPTCP: true, TCPKeepAliveInterval: 15, TCPKeepAliveIdle: 300,
+		TCPMaxSeg: 1440, TCPUserTimeout: 10000, TCPWindowClamp: 600,
+		TCPCongestion: "cubic", V6Only: true,
+		Custom: []config.CustomSockopt{{System: "linux", Network: "tcp4", Level: "6", Opt: "19", Type: "int", Value: "1"}},
+	}
+	service.VLESSReality.TestSeed = []uint32{900, 500, 900, 256}
+	service.VLESSReality.Fallbacks = []config.VLESSFallback{{Name: "fallback.example.com", ALPN: "http/1.1", Path: "/edge", Dest: "127.0.0.1:8080", Xver: 1}}
+	service.VLESSReality.MLDSA65Seed = base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("s", 32)))
+	service.VLESSReality.MLDSA65Verify = base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("v", 1952)))
+	service.VLESSReality.MasterKeyLog = "/tmp/relayward-xray.keys"
+	service.VLESSReality.LimitFallbackUpload = &config.RealityLimitFallback{AfterBytes: 1024, BytesPerSec: 2048, BurstBytesPerSec: 4096}
+	service.VLESSReality.LimitFallbackDownload = &config.RealityLimitFallback{AfterBytes: 2048, BytesPerSec: 4096, BurstBytesPerSec: 8192}
+	raw, err := Render(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatal(err)
+	}
+	var inbound map[string]any
+	for _, candidate := range root["inbounds"].([]any) {
+		item := candidate.(map[string]any)
+		if item["tag"] == service.ServiceID {
+			inbound = item
+			break
+		}
+	}
+	if inbound == nil {
+		t.Fatal("rendered inbound was not found")
+	}
+	settings := inbound["settings"].(map[string]any)
+	stream := inbound["streamSettings"].(map[string]any)
+	reality := stream["realitySettings"].(map[string]any)
+	sockopt := stream["sockopt"].(map[string]any)
+	fallback := settings["fallbacks"].([]any)[0].(map[string]any)
+	custom := sockopt["customSockopt"].([]any)[0].(map[string]any)
+	if settings["decryption"] != "none" || len(settings["testseed"].([]any)) != 4 || fallback["dest"] != "127.0.0.1:8080" ||
+		reality["mldsa65Seed"] != service.VLESSReality.MLDSA65Seed || reality["masterKeyLog"] != "/tmp/relayward-xray.keys" ||
+		reality["limitFallbackUpload"].(map[string]any)["bytesPerSec"] != float64(2048) ||
+		sockopt["tcpCongestion"] != "cubic" || sockopt["v6only"] != true || sockopt["tcpMptcp"] != true ||
+		sockopt["tcpKeepAliveIdle"] != float64(300) || custom["opt"] != "19" || custom["network"] != "tcp4" {
+		t.Fatalf("rendered complete inbound = %s", raw)
+	}
+	if _, exists := sockopt["tcpcongestion"]; exists {
+		t.Fatalf("renderer used non-canonical tcpcongestion key: %s", raw)
+	}
+	if _, exists := sockopt["V6Only"]; exists {
+		t.Fatalf("renderer used non-canonical V6Only key: %s", raw)
+	}
+}
+
 func TestRenderDNSLocalTransports(t *testing.T) {
 	t.Parallel()
 	value := testConfiguration(t)
@@ -201,14 +356,14 @@ func testConfiguration(t *testing.T) config.Configuration {
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
 			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
 			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
 			},
 		},
 	})

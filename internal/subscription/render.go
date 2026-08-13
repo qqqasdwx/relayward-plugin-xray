@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 
@@ -79,17 +80,35 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 		return nil, err
 	}
 	uri := vlessURI(service.PublicHost, service.PublicPort, credential, binding.DisplayName, reality.Flow,
-		reality.Fingerprint, serverName, publicKey, shortID)
-	mihomo, err := json.Marshal(map[string]any{
+		reality.Fingerprint, serverName, publicKey, shortID, reality.SpiderX, reality.Encryption,
+		reality.MLDSA65Verify, service.TCP)
+	contribution := &centerpluginv1.SubscriptionServiceContribution{
+		ServiceId: binding.ServiceId, DisplayName: binding.DisplayName, Uris: []string{uri},
+	}
+	if service.TCP.Header.Type == config.TCPHeaderHTTP || reality.MLDSA65Verify != "" {
+		return contribution, nil
+	}
+	mihomoValue := map[string]any{
 		"name": binding.DisplayName, "type": "vless", "server": service.PublicHost, "port": service.PublicPort,
 		"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": reality.Flow,
 		"servername": serverName, "client-fingerprint": reality.Fingerprint,
 		"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
-	})
+	}
+	if reality.Encryption != "none" {
+		mihomoValue["encryption"] = reality.Encryption
+	}
+	if reality.Flow == "" {
+		delete(mihomoValue, "flow")
+	}
+	mihomo, err := json.Marshal(mihomoValue)
 	if err != nil {
 		return nil, err
 	}
-	singBox, err := json.Marshal(map[string]any{
+	contribution.MihomoProxiesJson = [][]byte{mihomo}
+	if reality.Encryption != "none" {
+		return contribution, nil
+	}
+	singBoxValue := map[string]any{
 		"type": "vless", "tag": binding.DisplayName, "server": service.PublicHost, "server_port": service.PublicPort,
 		"uuid": credential, "flow": reality.Flow,
 		"tls": map[string]any{
@@ -97,24 +116,42 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 			"utls":    map[string]any{"enabled": true, "fingerprint": reality.Fingerprint},
 			"reality": map[string]any{"enabled": true, "public_key": publicKey, "short_id": shortID},
 		},
-	})
+	}
+	if reality.Flow == "" {
+		delete(singBoxValue, "flow")
+	}
+	singBox, err := json.Marshal(singBoxValue)
 	if err != nil {
 		return nil, err
 	}
-	return &centerpluginv1.SubscriptionServiceContribution{
-		ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
-		Uris: []string{uri}, MihomoProxiesJson: [][]byte{mihomo}, SingBoxOutboundsJson: [][]byte{singBox},
-	}, nil
+	contribution.SingBoxOutboundsJson = [][]byte{singBox}
+	return contribution, nil
 }
 
-func vlessURI(host string, port uint16, credential, displayName, flow, fingerprint, serverName, publicKey, shortID string) string {
+func vlessURI(host string, port uint16, credential, displayName, flow, fingerprint, serverName, publicKey, shortID, spiderX, encryption, mldsa65Verify string, tcp config.TCPSettings) string {
 	value := &url.URL{
 		Scheme: "vless", User: url.User(credential), Host: net.JoinHostPort(host, strconv.Itoa(int(port))),
 		Fragment: displayName,
 	}
 	query := url.Values{
-		"encryption": {"none"}, "flow": {flow}, "fp": {fingerprint}, "pbk": {publicKey},
+		"encryption": {encryption}, "fp": {fingerprint}, "pbk": {publicKey},
 		"security": {"reality"}, "sid": {shortID}, "sni": {serverName}, "type": {"tcp"},
+	}
+	if flow != "" {
+		query.Set("flow", flow)
+	}
+	if spiderX != "" && spiderX != "/" {
+		query.Set("spx", spiderX)
+	}
+	if mldsa65Verify != "" {
+		query.Set("pqv", mldsa65Verify)
+	}
+	if tcp.Header.Type == config.TCPHeaderHTTP && tcp.Header.Request != nil {
+		query.Set("headerType", "http")
+		query.Set("path", strings.Join(tcp.Header.Request.Path, ","))
+		if hosts := tcp.Header.Request.Headers["Host"]; len(hosts) > 0 {
+			query.Set("host", strings.Join(hosts, ","))
+		}
 	}
 	value.RawQuery = query.Encode()
 	return value.String()

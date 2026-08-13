@@ -173,7 +173,7 @@ func testConfigurationJSON(t *testing.T) []byte {
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
 		Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 		VLESSReality: &config.EditableVLESSReality{
-			Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
 		},
 	}})
 	if err != nil {

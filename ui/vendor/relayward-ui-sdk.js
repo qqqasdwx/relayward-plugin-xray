@@ -1,4 +1,6 @@
-export const MANIFEST_API_VERSION = "relayward.plugin/v1";
+export const MANIFEST_API_VERSION_V1 = "relayward.plugin/v1";
+export const MANIFEST_API_VERSION_V2 = "relayward.plugin/v2";
+export const MANIFEST_API_VERSION = MANIFEST_API_VERSION_V2;
 export const UI_API_MAJOR = 1;
 export const UI_BRIDGE_API_VERSION = "relayward.plugin-ui/v1";
 const uiMethodPattern = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
@@ -143,7 +145,9 @@ function isProblem(value) {
 }
 function isUIContext(value) {
     return isRecord(value) && typeof value.plugin_id === "string" && value.plugin_id.length > 0 &&
-        (value.theme === "light" || value.theme === "dark") && (value.locale === "zh-CN" || value.locale === "en");
+        (value.theme === "light" || value.theme === "dark") && (value.locale === "zh-CN" || value.locale === "en") &&
+        (value.scope === undefined || (isRecord(value.scope) && value.scope.kind === "node" &&
+            typeof value.scope.node_id === "string" && value.scope.node_id.length > 0));
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -43,9 +43,12 @@ func main() {
 		},
 		Permissions: []manifest.Permission{
 			{Name: centerpluginv1.PermissionNodeConfigure, Reason: "Read and publish the Xray plugin configuration for managed nodes."},
-			{Name: centerpluginv1.PermissionNodesRead, Reason: "List managed nodes in the Xray configuration page."},
 			{Name: centerpluginv1.PermissionServicesWrite, Reason: "Publish Xray services that can be bound to node authorizations."},
 		},
+		UI: &manifest.UIContribution{NodeDetail: &manifest.NodeDetailContribution{
+			Label: manifest.LocalizedLabel{ZhCN: "Xray", En: "Xray"},
+			Icon:  manifest.NavigationIconServerCog, Order: 400,
+		}},
 	}
 	for _, artifact := range []struct {
 		role manifest.ArtifactRole

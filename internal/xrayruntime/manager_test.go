@@ -328,14 +328,14 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
 			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
 			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
 			},
 		},
 	})
@@ -443,7 +443,7 @@ func testConfigurationValue(t *testing.T, listen string) config.Configuration {
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
 		Listen: listen, Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 		VLESSReality: &config.EditableVLESSReality{
-			Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
 		},
 	}})
 	if err != nil {

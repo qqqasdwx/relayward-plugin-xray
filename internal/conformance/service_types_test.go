@@ -19,7 +19,7 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
 			Listen: "127.0.0.1", Port: 8443, PublicHost: "edge.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "addons.mozilla.org:443", ServerName: "addons.mozilla.org", Fingerprint: "chrome",
+				Target: "addons.mozilla.org:443", ServerNames: []string{"addons.mozilla.org"}, Fingerprint: "chrome",
 			},
 		},
 	}

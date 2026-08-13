@@ -30,11 +30,11 @@ interface DNSPanelProps {
 
 export function DNSPanel({ value, busy, t, onChange, onAdd, onEdit, onDelete, onMove }: DNSPanelProps) {
   return (
-    <div className="grid gap-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid gap-1">
+    <div className="grid min-w-0 gap-6">
+      <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="grid min-w-0 gap-1">
           <h2 className="font-semibold">{t("DNS resolution")}</h2>
-          <p className="text-sm text-muted-foreground">{t("Ordered resolvers for Xray routing and direct outbound connections")}</p>
+          <p className="break-words text-sm text-muted-foreground">{t("Ordered resolvers for Xray routing and direct outbound connections")}</p>
         </div>
         <div className="flex items-center gap-2">
           <Label htmlFor="dns-enabled">{t("Enabled")}</Label>
@@ -42,7 +42,7 @@ export function DNSPanel({ value, busy, t, onChange, onAdd, onEdit, onDelete, on
         </div>
       </div>
 
-      <div className="grid max-w-sm gap-2">
+      <div className="grid min-w-0 max-w-sm gap-2">
         <Label htmlFor="dns-query-strategy">{t("Query strategy")}</Label>
         <Select value={value.query_strategy} disabled={busy} onValueChange={(queryStrategy: DNSQueryStrategy) => onChange({ ...value, query_strategy: queryStrategy })}>
           <SelectTrigger id="dns-query-strategy" className="w-full"><SelectValue /></SelectTrigger>
@@ -54,8 +54,8 @@ export function DNSPanel({ value, busy, t, onChange, onAdd, onEdit, onDelete, on
         </Select>
       </div>
 
-      <div className="flex flex-col gap-4 border-t pt-6 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid gap-1">
+      <div className="flex min-w-0 flex-col gap-4 border-t pt-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="grid min-w-0 gap-1">
           <h3 className="font-semibold">{t("DNS servers")}</h3>
           <p className="text-sm text-muted-foreground">{t("Servers are queried in the configured order")}</p>
         </div>
@@ -65,9 +65,9 @@ export function DNSPanel({ value, busy, t, onChange, onAdd, onEdit, onDelete, on
       {value.servers.length === 0 ? (
         <EmptyList title={t("No DNS servers configured")} detail={t("Add and enable a server before enabling DNS")} />
       ) : (
-        <div className="divide-y rounded-lg border">
+        <div className="min-w-0 divide-y rounded-lg border">
           {value.servers.map((server, index) => (
-            <article key={server.server_id} className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)_auto] md:items-center">
+            <article key={server.server_id} className="grid min-w-0 gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)_auto] md:items-center">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <strong className="truncate text-sm font-medium">{server.display_name}</strong>

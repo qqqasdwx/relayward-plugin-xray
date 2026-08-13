@@ -66,12 +66,6 @@ func (host *hostStub) ReplaceServices(_ context.Context, request *centerpluginv1
 	return &centerpluginv1.ServicesReplaced{ServiceCount: uint32(len(request.Services))}, nil
 }
 
-func (*hostStub) ListNodes(context.Context, *centerpluginv1.ListNodesRequest, ...grpc.CallOption) (*centerpluginv1.ListNodesResponse, error) {
-	return &centerpluginv1.ListNodesResponse{Nodes: []*centerpluginv1.Node{{
-		Id: "10000000-0000-4000-8000-000000000001", Name: "Edge",
-	}}}, nil
-}
-
 func (host *hostStub) GetNodePluginConfiguration(context.Context, *centerpluginv1.GetNodePluginConfigurationRequest,
 	...grpc.CallOption,
 ) (*centerpluginv1.NodePluginConfiguration, error) {
@@ -107,11 +101,6 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 		!jsonContainsValue(serviceTypes.GetJson(), config.ServiceTypeVLESSReality) {
 		t.Fatalf("service-types.list = %s, %v", serviceTypes.GetJson(), err)
 	}
-	nodes, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "nodes.list", Json: []byte(`{}`)})
-	if err != nil || string(nodes.GetJson()) !=
-		`{"nodes":[{"id":"10000000-0000-4000-8000-000000000001","name":"Edge","enabled":false,"connected":false}]}` {
-		t.Fatalf("nodes.list = %s, %v", nodes.GetJson(), err)
-	}
 	nodeID := "10000000-0000-4000-8000-000000000001"
 	fullConfiguration, err := config.Decode(testConfigurationJSON(t))
 	if err != nil {
@@ -141,7 +130,8 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
-	if err != nil || !json.Valid(loaded.GetJson()) || jsonContainsKey(loaded.Json, "credential_seed") || jsonContainsKey(loaded.Json, "private_key") {
+	if err != nil || !json.Valid(loaded.GetJson()) || jsonContainsKey(loaded.Json, "credential_seed") ||
+		!jsonContainsKey(loaded.Json, "private_key") || !jsonContainsKey(loaded.Json, "public_key") {
 		t.Fatalf("configuration.get = %s, %v", loaded.GetJson(), err)
 	}
 	configuration.Services[0].DisplayName = "Updated VLESS"
@@ -258,14 +248,14 @@ func testConfigurationJSON(t *testing.T) json.RawMessage {
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
 			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
 			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
 			},
 		},
 	})

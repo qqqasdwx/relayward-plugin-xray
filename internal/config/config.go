@@ -44,15 +44,18 @@ type Configuration struct {
 }
 
 type Service struct {
-	Type         string        `json:"type"`
-	Enabled      bool          `json:"enabled"`
-	ServiceID    string        `json:"service_id"`
-	DisplayName  string        `json:"display_name"`
-	Listen       string        `json:"listen"`
-	Port         uint16        `json:"port"`
-	PublicHost   string        `json:"public_host"`
-	PublicPort   uint16        `json:"public_port"`
-	VLESSReality *VLESSReality `json:"vless_reality,omitempty"`
+	Type         string          `json:"type"`
+	Enabled      bool            `json:"enabled"`
+	ServiceID    string          `json:"service_id"`
+	DisplayName  string          `json:"display_name"`
+	Listen       string          `json:"listen"`
+	Port         uint16          `json:"port"`
+	PublicHost   string          `json:"public_host"`
+	PublicPort   uint16          `json:"public_port"`
+	TCP          TCPSettings     `json:"tcp"`
+	Sockopt      *SocketSettings `json:"sockopt,omitempty"`
+	Sniffing     Sniffing        `json:"sniffing"`
+	VLESSReality *VLESSReality   `json:"vless_reality,omitempty"`
 }
 
 type EditableConfiguration struct {
@@ -72,6 +75,9 @@ type EditableService struct {
 	Port         uint16                `json:"port"`
 	PublicHost   string                `json:"public_host"`
 	PublicPort   uint16                `json:"public_port"`
+	TCP          TCPSettings           `json:"tcp"`
+	Sockopt      *SocketSettings       `json:"sockopt,omitempty"`
+	Sniffing     Sniffing              `json:"sniffing"`
 	VLESSReality *EditableVLESSReality `json:"vless_reality,omitempty"`
 }
 
@@ -81,7 +87,10 @@ func Editable(value Configuration) EditableConfiguration {
 		services[index] = EditableService{
 			Type: service.Type, Enabled: service.Enabled, ServiceID: service.ServiceID,
 			DisplayName: service.DisplayName, Listen: service.Listen, Port: service.Port,
-			PublicHost: service.PublicHost, PublicPort: service.PublicPort, VLESSReality: editableVLESSReality(service.VLESSReality),
+			PublicHost: service.PublicHost, PublicPort: service.PublicPort,
+			TCP: cloneTCPSettings(service.TCP), Sockopt: cloneSocketSettings(service.Sockopt),
+			Sniffing:     cloneSniffing(service.Sniffing),
+			VLESSReality: editableVLESSReality(service.VLESSReality),
 		}
 	}
 	return EditableConfiguration{
@@ -128,6 +137,12 @@ func MergeEditable(configuration Configuration, value EditableConfiguration) (Co
 		}
 		service.PublicHost = publicHost
 		service.PublicPort = editable.PublicPort
+		if editable.TCP.Header.Type == "" {
+			editable.TCP.Header.Type = TCPHeaderNone
+		}
+		service.TCP = cloneTCPSettings(editable.TCP)
+		service.Sockopt = cloneSocketSettings(editable.Sockopt)
+		service.Sniffing = cloneSniffing(editable.Sniffing)
 		services[index] = service
 	}
 	configuration.XrayVersion = value.XrayVersion
@@ -191,6 +206,15 @@ func Validate(value Configuration) error {
 			return fmt.Errorf("%s.service_id: services must be sorted by service ID", field)
 		}
 		if err := validateCommonService(value.APIPort, service, field); err != nil {
+			return err
+		}
+		if err := validateTCPSettings(service.TCP, field+".tcp"); err != nil {
+			return err
+		}
+		if err := validateSocketSettings(service.Sockopt, field+".sockopt"); err != nil {
+			return err
+		}
+		if err := validateSniffing(service.Sniffing, field+".sniffing"); err != nil {
 			return err
 		}
 		if err := validateServiceType(service, field); err != nil {
@@ -289,6 +313,9 @@ func randomKey() (string, error) {
 func clone(value Configuration) Configuration {
 	value.Services = append([]Service(nil), value.Services...)
 	for index := range value.Services {
+		value.Services[index].TCP = cloneTCPSettings(value.Services[index].TCP)
+		value.Services[index].Sockopt = cloneSocketSettings(value.Services[index].Sockopt)
+		value.Services[index].Sniffing = cloneSniffing(value.Services[index].Sniffing)
 		value.Services[index].VLESSReality = cloneVLESSReality(value.Services[index].VLESSReality)
 	}
 	value.Routing = cloneRouting(value.Routing)

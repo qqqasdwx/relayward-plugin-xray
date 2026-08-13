@@ -27,15 +27,40 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
 			Listen: "127.0.0.1", Port: mainPort, PublicHost: "edge.example.com", PublicPort: mainPort,
+			TCP: config.TCPSettings{Header: config.TCPHeader{Type: config.TCPHeaderNone}},
+			Sniffing: config.Sniffing{
+				Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"},
+				MetadataOnly: true, RouteOnly: true,
+				IPsExcluded: []string{"192.0.2.0/24"}, DomainsExcluded: []string{"domain:excluded.example"},
+			},
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+				Decryption: "none", Encryption: "none", TestSeed: []uint32{900, 500, 900, 256},
+				Fallbacks: []config.VLESSFallback{{Dest: strconv.Itoa(int(backupPort)), Xver: 0}},
+				Show:      true, Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"},
+				MinClientVersion: "1.0.0", MaxClientVersion: "26.3.27", MaxTimeDiff: 1000,
+				LimitFallbackUpload:   &config.RealityLimitFallback{AfterBytes: 1024, BytesPerSec: 2048, BurstBytesPerSec: 4096},
+				LimitFallbackDownload: &config.RealityLimitFallback{AfterBytes: 2048, BytesPerSec: 4096, BurstBytesPerSec: 8192},
+				Fingerprint:           "chrome", SpiderX: "/integration",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
 			Listen: "127.0.0.1", Port: backupPort, PublicHost: "backup.example.com", PublicPort: backupPort,
+			TCP: config.TCPSettings{Header: config.TCPHeader{
+				Type: config.TCPHeaderHTTP,
+				Request: &config.TCPHTTPRequest{
+					Version: "1.1", Method: "GET", Path: []string{"/integration"},
+					Headers: map[string][]string{"Host": {"www.microsoft.com"}},
+				},
+				Response: &config.TCPHTTPResponse{
+					Version: "1.1", Status: "200", Reason: "OK",
+					Headers: map[string][]string{"Content-Type": {"application/octet-stream"}},
+				},
+			}},
 			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+				Decryption: "none", Encryption: "none",
+				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"},
+				Fingerprint: "chrome", SpiderX: "/",
 			},
 		},
 	})

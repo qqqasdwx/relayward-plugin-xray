@@ -12,8 +12,45 @@ import type {
 export function cloneServices(values: ProxyService[]): ProxyService[] {
   return values.map((service) => ({
     ...service,
-    vless_reality: { ...service.vless_reality },
+    tcp: {
+      ...service.tcp,
+      header: {
+        ...service.tcp.header,
+        request: service.tcp.header.request == null ? undefined : {
+          ...service.tcp.header.request,
+          path: [...service.tcp.header.request.path],
+          headers: cloneHeaders(service.tcp.header.request.headers),
+        },
+        response: service.tcp.header.response == null ? undefined : {
+          ...service.tcp.header.response,
+          headers: cloneHeaders(service.tcp.header.response.headers),
+        },
+      },
+    },
+    sockopt: service.sockopt == null ? undefined : {
+      ...service.sockopt,
+      custom: service.sockopt.custom.map((option) => ({ ...option })),
+    },
+    sniffing: {
+      ...service.sniffing,
+      dest_override: [...service.sniffing.dest_override],
+      ips_excluded: [...service.sniffing.ips_excluded],
+      domains_excluded: [...service.sniffing.domains_excluded],
+    },
+    vless_reality: {
+      ...service.vless_reality,
+      test_seed: [...service.vless_reality.test_seed],
+      fallbacks: service.vless_reality.fallbacks.map((fallback) => ({ ...fallback })),
+      server_names: [...service.vless_reality.server_names],
+      short_ids: [...service.vless_reality.short_ids],
+      limit_fallback_upload: service.vless_reality.limit_fallback_upload == null ? undefined : { ...service.vless_reality.limit_fallback_upload },
+      limit_fallback_download: service.vless_reality.limit_fallback_download == null ? undefined : { ...service.vless_reality.limit_fallback_download },
+    },
   }))
+}
+
+function cloneHeaders(values: Record<string, string[]>): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(values).map(([name, entries]) => [name, [...entries]]))
 }
 
 export function cloneRoutingRules(values: RoutingRule[]): RoutingRule[] {
@@ -68,10 +105,40 @@ export function nextServiceDefaults(services: ProxyService[], serviceTypes: Serv
     port,
     public_host: "edge.example.com",
     public_port: port,
+    tcp: {
+      accept_proxy_protocol: false,
+      header: { type: "none" },
+    },
+    sockopt: undefined,
+    sniffing: {
+      enabled: true,
+      dest_override: ["http", "tls", "quic", "fakedns"],
+      metadata_only: false,
+      route_only: false,
+      ips_excluded: [],
+      domains_excluded: [],
+    },
     vless_reality: {
-      target: "www.cloudflare.com:443",
-      server_name: "www.cloudflare.com",
+      decryption: "none",
+      encryption: "none",
+      test_seed: [],
+      fallbacks: [],
+      show: false,
+      xver: 0,
+      target: "addons.mozilla.org:443",
+      server_names: ["addons.mozilla.org"],
+      private_key: "",
+      public_key: "",
+      short_ids: [],
+      min_client_version: "1.0.0",
+      max_client_version: "",
+      max_time_diff: 0,
+      mldsa65_seed: "",
+      mldsa65_verify: "",
+      master_key_log: "",
+      flow: "xtls-rprx-vision",
       fingerprint: "chrome",
+      spider_x: "/",
     },
   }
 }

@@ -348,6 +348,7 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 		}
 		return runtimeCredential{
 			id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.VLESSReality.Flow,
+			testSeed: append([]uint32(nil), service.VLESSReality.TestSeed...),
 		}, nil
 	default:
 		return runtimeCredential{}, ErrUnsupportedService
@@ -355,9 +356,10 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 }
 
 type runtimeCredential struct {
-	id    string
-	email string
-	flow  string
+	id       string
+	email    string
+	flow     string
+	testSeed []uint32
 }
 
 func (manager *Manager) refreshTraffic(ctx context.Context, process *managedProcess) error {
@@ -432,7 +434,9 @@ func apiAddress(configuration config.Configuration) string {
 }
 
 func (api *xrayAPI) addUser(parent context.Context, inboundTag string, credential runtimeCredential) error {
-	account, err := marshalLegacy(&vlessAccount{ID: credential.id, Flow: credential.flow, Encryption: "none"})
+	account, err := marshalLegacy(&vlessAccount{
+		ID: credential.id, Flow: credential.flow, Encryption: "none", TestSeed: credential.testSeed,
+	})
 	if err != nil {
 		return errors.New("encode Xray VLESS account")
 	}
@@ -637,9 +641,10 @@ type protocolUser struct {
 }
 
 type vlessAccount struct {
-	ID         string `protobuf:"bytes,1,opt,name=id,proto3"`
-	Flow       string `protobuf:"bytes,2,opt,name=flow,proto3"`
-	Encryption string `protobuf:"bytes,3,opt,name=encryption,proto3"`
+	ID         string   `protobuf:"bytes,1,opt,name=id,proto3"`
+	Flow       string   `protobuf:"bytes,2,opt,name=flow,proto3"`
+	Encryption string   `protobuf:"bytes,3,opt,name=encryption,proto3"`
+	TestSeed   []uint32 `protobuf:"varint,9,rep,packed,name=testseed,proto3"`
 }
 
 type addUserOperation struct {

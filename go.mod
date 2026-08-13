@@ -3,7 +3,7 @@ module github.com/Relayward/relayward-plugin-xray
 go 1.26.0
 
 require (
-	github.com/Relayward/relayward-sdk v0.2.1-0.20260807095204-264b9dd62a45
+	github.com/Relayward/relayward-sdk v0.2.1
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
 )

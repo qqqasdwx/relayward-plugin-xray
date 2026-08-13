@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  cloneServices,
   configurationForSave,
   configurationFromStored,
   defaultDNSConfiguration,
@@ -16,6 +17,8 @@ describe("configuration helpers", () => {
     const value = configurationFromStored({ exists: false, node_id: "node-1" }, [{ id: "vless-reality", display_name: "VLESS Reality" }], "zh-CN")
     expect(value.xray_version).toBe("26.3.27")
     expect(value.services[0]?.service_id).toBe("vless-reality")
+    expect(value.services[0]?.tcp.header.type).toBe("none")
+    expect(value.services[0]?.sniffing.dest_override).toEqual(["http", "tls", "quic", "fakedns"])
     expect(value.dns).toEqual(defaultDNSConfiguration("zh-CN"))
   })
 
@@ -31,7 +34,7 @@ describe("configuration helpers", () => {
 
   it("normalizes lines and sorts services only for publication", () => {
     const first = nextServiceDefaults([], [])
-    const second = { ...first, service_id: "alpha", vless_reality: { ...first.vless_reality } }
+    const second = cloneServices([{ ...first, service_id: "alpha" }])[0]
     const draft = configurationFromStored({ exists: false, node_id: "node-1" }, [], "en")
     draft.services = [first, second]
     expect(configurationForSave(draft).services.map((service) => service.service_id)).toEqual(["alpha", "vless-reality"])

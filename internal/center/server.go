@@ -21,7 +21,6 @@ import (
 
 var requiredPermissions = []string{
 	centerpluginv1.PermissionNodeConfigure,
-	centerpluginv1.PermissionNodesRead,
 	centerpluginv1.PermissionServicesWrite,
 }
 
@@ -78,8 +77,6 @@ func (server *Server) InvokeUI(ctx context.Context, request *centerpluginv1.Invo
 	switch request.Method {
 	case "service-types.list":
 		value = map[string]any{"service_types": config.SupportedServiceTypes()}
-	case "nodes.list":
-		value, err = server.listNodes(ctx)
 	case "configuration.get":
 		value, err = server.getConfiguration(ctx, request.Json)
 	case "configuration.save":
@@ -109,30 +106,6 @@ type saveConfigurationRequest struct {
 	NodeID             string                       `json:"node_id"`
 	ExpectedGeneration uint64                       `json:"expected_generation"`
 	Configuration      config.EditableConfiguration `json:"configuration"`
-}
-
-type nodeSummary struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Enabled   bool   `json:"enabled"`
-	Connected bool   `json:"connected"`
-}
-
-func (server *Server) listNodes(ctx context.Context) (any, error) {
-	response, err := server.host.ListNodes(ctx, &centerpluginv1.ListNodesRequest{})
-	if err != nil {
-		return nil, err
-	}
-	if err := centerpluginv1.ValidateListNodesResponse(response); err != nil {
-		return nil, status.Error(codes.Internal, "Relayward returned invalid node state")
-	}
-	nodes := make([]nodeSummary, len(response.Nodes))
-	for index, node := range response.Nodes {
-		nodes[index] = nodeSummary{
-			ID: node.Id, Name: node.Name, Enabled: node.Enabled, Connected: node.Connected,
-		}
-	}
-	return map[string]any{"nodes": nodes}, nil
 }
 
 func (server *Server) getConfiguration(ctx context.Context, raw []byte) (any, error) {
