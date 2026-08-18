@@ -209,7 +209,7 @@ export function App() {
         if (cancelled) return
         setServiceTypes(types)
         setStored(loaded)
-        setDraft(configurationFromStored(loaded, types, context.locale))
+        setDraft(configurationFromStored(loaded, context.locale))
       } catch (cause) {
         if (!cancelled) setError(errorMessage(cause, translator(bootstrapLocale)("The request could not be completed.")))
       } finally {
@@ -239,7 +239,7 @@ export function App() {
     try {
       const loaded = parseStored(await client.rpc("configuration.get", { node_id: nodeID }))
       setStored(loaded)
-      setDraft(configurationFromStored(loaded, serviceTypes, locale))
+      setDraft(configurationFromStored(loaded, locale))
     } catch (cause) {
       setError(errorMessage(cause, t("The request could not be completed.")))
     } finally {
@@ -277,7 +277,7 @@ export function App() {
       })
       const loaded = parseStored(await client.rpc("configuration.get", { node_id: nodeID }))
       setStored(loaded)
-      setDraft(configurationFromStored(loaded, serviceTypes, locale))
+      setDraft(configurationFromStored(loaded, locale))
       setNotice(t("Configuration saved."))
     } catch (cause) {
       setError(errorMessage(cause, t("The request could not be completed.")))

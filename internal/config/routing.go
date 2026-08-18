@@ -123,9 +123,9 @@ func validateRoutingProtocols(values []string, field string) error {
 func cloneRouting(value RoutingConfiguration) RoutingConfiguration {
 	rules := make([]RoutingRule, len(value.Rules))
 	for index, rule := range value.Rules {
-		rule.Domains = append([]string(nil), rule.Domains...)
-		rule.IPCIDRs = append([]string(nil), rule.IPCIDRs...)
-		rule.Protocols = append([]string(nil), rule.Protocols...)
+		rule.Domains = append([]string{}, rule.Domains...)
+		rule.IPCIDRs = append([]string{}, rule.IPCIDRs...)
+		rule.Protocols = append([]string{}, rule.Protocols...)
 		rules[index] = rule
 	}
 	value.Rules = rules

@@ -118,7 +118,7 @@ func editableVLESSReality(value *VLESSReality) *EditableVLESSReality {
 	publicKey, _ := RealityPublicKey(value.PrivateKey)
 	return &EditableVLESSReality{
 		Decryption: value.Decryption, Encryption: value.Encryption,
-		TestSeed: append([]uint32(nil), value.TestSeed...), Fallbacks: append([]VLESSFallback(nil), value.Fallbacks...),
+		TestSeed: append([]uint32{}, value.TestSeed...), Fallbacks: append([]VLESSFallback{}, value.Fallbacks...),
 		Show: value.Show, Xver: value.Xver, Target: value.Target,
 		ServerNames: append([]string{}, value.ServerNames...), PrivateKey: value.PrivateKey, PublicKey: publicKey,
 		ShortIDs: append([]string{}, value.ShortIDs...), MinClientVersion: value.MinClientVersion,

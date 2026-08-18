@@ -295,7 +295,7 @@ func cloneTCPHTTPRequest(value *TCPHTTPRequest) *TCPHTTPRequest {
 		return nil
 	}
 	clone := *value
-	clone.Path = append([]string(nil), value.Path...)
+	clone.Path = append([]string{}, value.Path...)
 	clone.Headers = cloneHTTPHeaders(value.Headers)
 	return &clone
 }
@@ -311,11 +311,11 @@ func cloneTCPHTTPResponse(value *TCPHTTPResponse) *TCPHTTPResponse {
 
 func cloneHTTPHeaders(value map[string][]string) map[string][]string {
 	if value == nil {
-		return nil
+		return map[string][]string{}
 	}
 	clone := make(map[string][]string, len(value))
 	for name, entries := range value {
-		clone[name] = append([]string(nil), entries...)
+		clone[name] = append([]string{}, entries...)
 	}
 	return clone
 }
@@ -332,6 +332,6 @@ func cloneSocketSettings(value *SocketSettings) *SocketSettings {
 		return nil
 	}
 	clone := *value
-	clone.Custom = append([]CustomSockopt(nil), value.Custom...)
+	clone.Custom = append([]CustomSockopt{}, value.Custom...)
 	return &clone
 }

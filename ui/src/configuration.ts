@@ -181,14 +181,13 @@ export function nextDNSServerDefaults(servers: DNSServer[], locale: Locale): DNS
 
 export function configurationFromStored(
   stored: StoredConfiguration,
-  serviceTypes: ServiceType[],
   locale: Locale,
 ): EditableConfiguration {
   if (!stored.exists || stored.configuration == null) {
     return {
       xray_version: "26.3.27",
       api_port: 10085,
-      services: [nextServiceDefaults([], serviceTypes)],
+      services: [],
       routing: { rules: [] },
       dns: defaultDNSConfiguration(locale),
     }

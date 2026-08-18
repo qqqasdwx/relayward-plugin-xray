@@ -127,9 +127,9 @@ func validateDoHURL(raw string) error {
 }
 
 func cloneDNS(value DNSConfiguration) DNSConfiguration {
-	value.Servers = append([]DNSServer(nil), value.Servers...)
+	value.Servers = append([]DNSServer{}, value.Servers...)
 	for index := range value.Servers {
-		value.Servers[index].Domains = append([]string(nil), value.Servers[index].Domains...)
+		value.Servers[index].Domains = append([]string{}, value.Servers[index].Domains...)
 	}
 	return value
 }

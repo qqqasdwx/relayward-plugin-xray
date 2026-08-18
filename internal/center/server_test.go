@@ -131,7 +131,7 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
 	if err != nil || !json.Valid(loaded.GetJson()) || jsonContainsKey(loaded.Json, "credential_seed") ||
-		!jsonContainsKey(loaded.Json, "private_key") || !jsonContainsKey(loaded.Json, "public_key") {
+		!jsonContainsKey(loaded.Json, "private_key") || !jsonContainsKey(loaded.Json, "public_key") || jsonContainsNull(loaded.Json) {
 		t.Fatalf("configuration.get = %s, %v", loaded.GetJson(), err)
 	}
 	configuration.Services[0].DisplayName = "Updated VLESS"
@@ -193,6 +193,34 @@ func jsonContainsKey(raw []byte, key string) bool {
 			if _, exists := typed[key]; exists {
 				return true
 			}
+			for _, child := range typed {
+				if contains(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if contains(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return contains(value)
+}
+
+func jsonContainsNull(raw []byte) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return true
+	}
+	var contains func(any) bool
+	contains = func(candidate any) bool {
+		switch typed := candidate.(type) {
+		case nil:
+			return true
+		case map[string]any:
 			for _, child := range typed {
 				if contains(child) {
 					return true
