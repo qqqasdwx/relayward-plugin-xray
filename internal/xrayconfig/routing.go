@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 const APIRuleTag = "relayward-api"

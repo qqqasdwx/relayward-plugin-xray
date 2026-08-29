@@ -64,6 +64,32 @@ type EditableVLESSReality struct {
 	SpiderX               string                `json:"spider_x"`
 }
 
+const (
+	ShadowsocksMethod2022AES128 = "2022-blake3-aes-128-gcm"
+	ShadowsocksMethod2022AES256 = "2022-blake3-aes-256-gcm"
+	ShadowsocksMethodAES128     = "aes-128-gcm"
+	ShadowsocksMethodAES256     = "aes-256-gcm"
+	ShadowsocksMethodChaCha20   = "chacha20-ietf-poly1305"
+	ShadowsocksMethodXChaCha20  = "xchacha20-ietf-poly1305"
+	ShadowsocksNetworkTCP       = "tcp"
+	ShadowsocksNetworkUDP       = "udp"
+	ShadowsocksNetworkTCPUDP    = "tcp,udp"
+)
+
+type Shadowsocks struct {
+	Method    string `json:"method"`
+	Network   string `json:"network"`
+	ServerKey string `json:"server_key"`
+	IVCheck   bool   `json:"iv_check"`
+}
+
+type EditableShadowsocks struct {
+	Method    string `json:"method"`
+	Network   string `json:"network"`
+	ServerKey string `json:"server_key"`
+	IVCheck   bool   `json:"iv_check"`
+}
+
 type ServiceTypeCapabilities struct {
 	XrayInbound         bool     `json:"xray_inbound"`
 	ServiceControl      bool     `json:"service_control"`
@@ -79,14 +105,24 @@ type ServiceTypeDefinition struct {
 	Capabilities ServiceTypeCapabilities `json:"capabilities"`
 }
 
-var serviceTypeDefinitions = []ServiceTypeDefinition{{
-	ID: ServiceTypeVLESSReality, DisplayName: "VLESS REALITY",
-	Capabilities: ServiceTypeCapabilities{
-		XrayInbound: true, ServiceControl: true, TrafficCounters: true,
-		RecentActivity: true, DynamicBlocking: true,
-		SubscriptionFormats: []string{"base64", "mihomo", "sing-box"},
+var serviceTypeDefinitions = []ServiceTypeDefinition{
+	{
+		ID: ServiceTypeVLESSReality, DisplayName: "VLESS REALITY",
+		Capabilities: ServiceTypeCapabilities{
+			XrayInbound: true, ServiceControl: true, TrafficCounters: true,
+			RecentActivity: true, DynamicBlocking: true,
+			SubscriptionFormats: []string{"base64", "mihomo", "sing-box"},
+		},
 	},
-}}
+	{
+		ID: ServiceTypeShadowsocks, DisplayName: "Shadowsocks",
+		Capabilities: ServiceTypeCapabilities{
+			XrayInbound: true, ServiceControl: true, TrafficCounters: true,
+			RecentActivity: true, DynamicBlocking: true,
+			SubscriptionFormats: []string{"base64", "mihomo", "sing-box"},
+		},
+	},
+}
 
 func SupportedServiceTypes() []ServiceTypeDefinition {
 	values := make([]ServiceTypeDefinition, len(serviceTypeDefinitions))
@@ -127,6 +163,15 @@ func editableVLESSReality(value *VLESSReality) *EditableVLESSReality {
 		LimitFallbackUpload:   cloneRealityLimitFallback(value.LimitFallbackUpload),
 		LimitFallbackDownload: cloneRealityLimitFallback(value.LimitFallbackDownload),
 		Flow:                  value.Flow, Fingerprint: value.Fingerprint, SpiderX: value.SpiderX,
+	}
+}
+
+func editableShadowsocks(value *Shadowsocks) *EditableShadowsocks {
+	if value == nil {
+		return nil
+	}
+	return &EditableShadowsocks{
+		Method: value.Method, Network: value.Network, ServerKey: value.ServerKey, IVCheck: value.IVCheck,
 	}
 }
 
@@ -185,6 +230,35 @@ func mergeServiceType(existing Service, _ bool, editable EditableService) (Servi
 			Flow:                  editable.VLESSReality.Flow,
 			Fingerprint:           editable.VLESSReality.Fingerprint, SpiderX: spiderX,
 		}
+		existing.Shadowsocks = nil
+		return existing, nil
+	case ServiceTypeShadowsocks:
+		if editable.Shadowsocks == nil {
+			return Service{}, fmt.Errorf("shadowsocks: configuration is required")
+		}
+		method := editable.Shadowsocks.Method
+		if method == "" {
+			method = ShadowsocksMethod2022AES256
+		}
+		network := editable.Shadowsocks.Network
+		if network == "" {
+			network = ShadowsocksNetworkTCPUDP
+		}
+		serverKey := editable.Shadowsocks.ServerKey
+		if IsShadowsocks2022(method) && !validShadowsocksKey(serverKey, ShadowsocksKeyBytes(method)) {
+			var err error
+			serverKey, err = newShadowsocksKey(ShadowsocksKeyBytes(method))
+			if err != nil {
+				return Service{}, err
+			}
+		}
+		if !IsShadowsocks2022(method) {
+			serverKey = ""
+		}
+		existing.VLESSReality = nil
+		existing.Shadowsocks = &Shadowsocks{
+			Method: method, Network: network, ServerKey: serverKey, IVCheck: editable.Shadowsocks.IVCheck,
+		}
 		return existing, nil
 	default:
 		return Service{}, fmt.Errorf("unsupported service type %q", editable.Type)
@@ -194,13 +268,97 @@ func mergeServiceType(existing Service, _ bool, editable EditableService) (Servi
 func validateServiceType(service Service, field string) error {
 	switch service.Type {
 	case ServiceTypeVLESSReality:
-		if service.VLESSReality == nil {
+		if service.VLESSReality == nil || service.Shadowsocks != nil {
 			return fmt.Errorf("%s.vless_reality: configuration is required", field)
 		}
 		return validateVLESSReality(*service.VLESSReality, field+".vless_reality")
+	case ServiceTypeShadowsocks:
+		if service.Shadowsocks == nil || service.VLESSReality != nil {
+			return fmt.Errorf("%s.shadowsocks: configuration is required", field)
+		}
+		return validateShadowsocks(*service.Shadowsocks, field+".shadowsocks")
 	default:
 		return fmt.Errorf("%s.type: unsupported service type", field)
 	}
+}
+
+func validateShadowsocks(value Shadowsocks, field string) error {
+	if !IsShadowsocksMethod(value.Method) {
+		return fmt.Errorf("%s.method: unsupported Shadowsocks method", field)
+	}
+	switch value.Network {
+	case ShadowsocksNetworkTCP, ShadowsocksNetworkUDP, ShadowsocksNetworkTCPUDP:
+	default:
+		return fmt.Errorf("%s.network: must be tcp, udp, or tcp,udp", field)
+	}
+	if IsShadowsocks2022(value.Method) {
+		if !validShadowsocksKey(value.ServerKey, ShadowsocksKeyBytes(value.Method)) {
+			return fmt.Errorf("%s.server_key: must be a %d-byte padded base64 key", field, ShadowsocksKeyBytes(value.Method))
+		}
+	} else if value.ServerKey != "" {
+		return fmt.Errorf("%s.server_key: only Shadowsocks 2022 uses a server key", field)
+	}
+	return nil
+}
+
+func IsShadowsocksMethod(method string) bool {
+	switch method {
+	case ShadowsocksMethod2022AES128, ShadowsocksMethod2022AES256,
+		ShadowsocksMethodAES128, ShadowsocksMethodAES256,
+		ShadowsocksMethodChaCha20, ShadowsocksMethodXChaCha20:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsShadowsocks2022(method string) bool {
+	return method == ShadowsocksMethod2022AES128 || method == ShadowsocksMethod2022AES256
+}
+
+func ShadowsocksKeyBytes(method string) int {
+	if method == ShadowsocksMethod2022AES128 {
+		return 16
+	}
+	if method == ShadowsocksMethod2022AES256 {
+		return 32
+	}
+	return 0
+}
+
+func ShadowsocksCipherType(method string) (int32, bool) {
+	switch method {
+	case ShadowsocksMethodAES128:
+		return 5, true
+	case ShadowsocksMethodAES256:
+		return 6, true
+	case ShadowsocksMethodChaCha20:
+		return 7, true
+	case ShadowsocksMethodXChaCha20:
+		return 8, true
+	default:
+		return 0, false
+	}
+}
+
+func ShadowsocksClientPassword(value Shadowsocks, userPassword string) string {
+	if IsShadowsocks2022(value.Method) {
+		return value.ServerKey + ":" + userPassword
+	}
+	return userPassword
+}
+
+func validShadowsocksKey(value string, size int) bool {
+	raw, err := base64.StdEncoding.DecodeString(value)
+	return err == nil && len(raw) == size && base64.StdEncoding.EncodeToString(raw) == value
+}
+
+func newShadowsocksKey(size int) (string, error) {
+	value := make([]byte, size)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate Shadowsocks server key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(value), nil
 }
 
 func validateVLESSReality(value VLESSReality, field string) error {
@@ -495,6 +653,14 @@ func cloneVLESSReality(value *VLESSReality) *VLESSReality {
 	clone.Fallbacks = append([]VLESSFallback(nil), value.Fallbacks...)
 	clone.LimitFallbackUpload = cloneRealityLimitFallback(value.LimitFallbackUpload)
 	clone.LimitFallbackDownload = cloneRealityLimitFallback(value.LimitFallbackDownload)
+	return &clone
+}
+
+func cloneShadowsocks(value *Shadowsocks) *Shadowsocks {
+	if value == nil {
+		return nil
+	}
+	clone := *value
 	return &clone
 }
 

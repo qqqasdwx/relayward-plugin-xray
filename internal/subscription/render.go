@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
@@ -10,11 +11,11 @@ import (
 
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 func SupportsServiceType(serviceType string) bool {
-	return serviceType == config.ServiceTypeVLESSReality
+	return serviceType == config.ServiceTypeVLESSReality || serviceType == config.ServiceTypeShadowsocks
 }
 
 func SupportedFormats(serviceType string) []string {
@@ -60,9 +61,57 @@ func renderService(configuration config.Configuration, service config.Service,
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
 		return renderVLESSReality(configuration, service, binding, authorizationID)
+	case config.ServiceTypeShadowsocks:
+		return renderShadowsocks(configuration, service, binding, authorizationID)
 	default:
 		return nil, errors.New("subscription requests an unsupported Xray service type")
 	}
+}
+
+func renderShadowsocks(configuration config.Configuration, service config.Service,
+	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string,
+) (*centerpluginv1.SubscriptionServiceContribution, error) {
+	settings := service.Shadowsocks
+	userPassword, err := config.DeriveShadowsocksPassword(
+		configuration.CredentialSeed, authorizationID, binding.ServiceId, settings.Method,
+	)
+	if err != nil {
+		return nil, err
+	}
+	password := config.ShadowsocksClientPassword(*settings, userPassword)
+	contribution := &centerpluginv1.SubscriptionServiceContribution{
+		ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
+		Uris: []string{shadowsocksURI(service.PublicHost, service.PublicPort, settings.Method, settings.ServerKey, userPassword, binding.DisplayName)},
+	}
+	mihomo, err := json.Marshal(map[string]any{
+		"name": binding.DisplayName, "type": "ss", "server": service.PublicHost, "port": service.PublicPort,
+		"cipher": settings.Method, "password": password, "udp": settings.Network != config.ShadowsocksNetworkTCP,
+	})
+	if err != nil {
+		return nil, err
+	}
+	contribution.MihomoProxiesJson = [][]byte{mihomo}
+	singBox, err := json.Marshal(map[string]any{
+		"type": "shadowsocks", "tag": binding.DisplayName, "server": service.PublicHost,
+		"server_port": service.PublicPort, "method": settings.Method, "password": password,
+	})
+	if err != nil {
+		return nil, err
+	}
+	contribution.SingBoxOutboundsJson = [][]byte{singBox}
+	return contribution, nil
+}
+
+func shadowsocksURI(host string, port uint16, method, serverKey, userPassword, displayName string) string {
+	var userInfo string
+	if config.IsShadowsocks2022(method) {
+		userInfo = strings.Join([]string{
+			url.QueryEscape(method), url.QueryEscape(serverKey), url.QueryEscape(userPassword),
+		}, ":")
+	} else {
+		userInfo = base64.RawURLEncoding.EncodeToString([]byte(method + ":" + userPassword))
+	}
+	return "ss://" + userInfo + "@" + net.JoinHostPort(host, strconv.Itoa(int(port))) + "#" + url.PathEscape(displayName)
 }
 
 func renderVLESSReality(configuration config.Configuration, service config.Service,

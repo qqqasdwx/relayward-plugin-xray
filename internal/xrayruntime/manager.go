@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayrelease"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayconfig"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayrelease"
 )
 
 const (

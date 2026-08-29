@@ -1,15 +1,60 @@
 package xrayruntime
 
 import (
+	"encoding/base64"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/protoadapt"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayconfig"
 )
+
+func TestMarshalRuntimeAccountsForShadowsocks(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		credential  runtimeCredential
+		accountType string
+		verify      func(*testing.T, []byte)
+	}{
+		{
+			name: "2022", accountType: "xray.proxy.shadowsocks_2022.Account",
+			credential: runtimeCredential{serviceType: config.ServiceTypeShadowsocks, method: config.ShadowsocksMethod2022AES256, password: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))},
+			verify: func(t *testing.T, raw []byte) {
+				value := &shadowsocks2022Account{}
+				if err := proto.Unmarshal(raw, protoadapt.MessageV2Of(value)); err != nil || value.Key == "" {
+					t.Fatalf("Shadowsocks 2022 account = %+v, %v", value, err)
+				}
+			},
+		},
+		{
+			name: "AEAD", accountType: "xray.proxy.shadowsocks.Account",
+			credential: runtimeCredential{serviceType: config.ServiceTypeShadowsocks, method: config.ShadowsocksMethodChaCha20, password: "password", ivCheck: true},
+			verify: func(t *testing.T, raw []byte) {
+				value := &shadowsocksAccount{}
+				if err := proto.Unmarshal(raw, protoadapt.MessageV2Of(value)); err != nil || value.Password != "password" || value.CipherType != 7 || !value.IVCheck {
+					t.Fatalf("Shadowsocks account = %+v, %v", value, err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			accountType, raw, err := marshalRuntimeAccount(test.credential)
+			if err != nil || accountType != test.accountType {
+				t.Fatalf("marshalRuntimeAccount() = %q, %x, %v", accountType, raw, err)
+			}
+			test.verify(t, raw)
+		})
+	}
+}
 
 func TestOnlineIPResponseDecodesOfficialMapWireFormat(t *testing.T) {
 	t.Parallel()

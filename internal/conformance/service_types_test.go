@@ -6,10 +6,10 @@ import (
 
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
-	"github.com/Relayward/relayward-plugin-xray/internal/subscription"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayruntime"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/subscription"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayconfig"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayruntime"
 )
 
 func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
@@ -20,6 +20,13 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 			Listen: "127.0.0.1", Port: 8443, PublicHost: "edge.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "addons.mozilla.org:443", ServerNames: []string{"addons.mozilla.org"}, Fingerprint: "chrome",
+			},
+		},
+		config.ServiceTypeShadowsocks: {
+			Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
+			Listen: "127.0.0.1", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+			Shadowsocks: &config.EditableShadowsocks{
+				Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
 			},
 		},
 	}

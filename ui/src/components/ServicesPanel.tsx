@@ -41,7 +41,9 @@ export function ServicesPanel({ services: inbounds, busy, t, onAdd, onEdit, onDe
                 <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{inbound.service_id}</p>
               </div>
               <div className="grid min-w-0 gap-1 text-sm text-muted-foreground">
-                <span className="break-words">VLESS · TCP · REALITY</span>
+                <span className="break-words">{inbound.type === "shadowsocks" && inbound.shadowsocks != null
+                  ? `Shadowsocks · ${inbound.shadowsocks.network.toUpperCase()} · ${inbound.shadowsocks.method}`
+                  : "VLESS · TCP · REALITY"}</span>
                 <span className="break-words">{t("Listen {address}:{port}", { address: inbound.listen, port: inbound.port })}</span>
                 <span className="break-words">{t("Share {host}:{port}", { host: inbound.public_host, port: inbound.public_port })}</span>
               </div>

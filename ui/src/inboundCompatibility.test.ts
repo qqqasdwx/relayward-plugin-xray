@@ -17,8 +17,8 @@ describe("inbound compatibility", () => {
   it("reports every enabled restricted parameter per generated format", () => {
     const service = nextServiceDefaults([], [])
     service.tcp.header.type = "http"
-    service.vless_reality.encryption = "mlkem768x25519plus.native.0rtt.key"
-    service.vless_reality.mldsa65_verify = "verify"
+    service.vless_reality!.encryption = "mlkem768x25519plus.native.0rtt.key"
+    service.vless_reality!.mldsa65_verify = "verify"
 
     const result = compatibilityFor(service)
 
@@ -36,18 +36,18 @@ describe("inbound compatibility", () => {
 
   it("does not restrict subscriptions for an empty or none encryption value", () => {
     const service = nextServiceDefaults([], [])
-    service.vless_reality.encryption = "  none  "
+    service.vless_reality!.encryption = "  none  "
 
     expect(compatibilityFor(service).every((entry) => entry.supported)).toBe(true)
   })
 
   it("only applies ML-DSA client restrictions when the verification value is present", () => {
     const service = nextServiceDefaults([], [])
-    service.vless_reality.mldsa65_seed = "server-only-seed"
+    service.vless_reality!.mldsa65_seed = "server-only-seed"
 
     expect(compatibilityFor(service).every((entry) => entry.supported)).toBe(true)
 
-    service.vless_reality.mldsa65_verify = "client-verification-value"
+    service.vless_reality!.mldsa65_verify = "client-verification-value"
     expect(compatibilityFor(service).map(({ core, supported }) => ({ core, supported }))).toEqual([
       { core: "xray", supported: true },
       { core: "sing-box", supported: false },

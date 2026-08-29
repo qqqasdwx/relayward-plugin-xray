@@ -3,7 +3,7 @@ package xrayconfig
 import (
 	"strings"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 func renderDNS(value config.DNSConfiguration) map[string]any {

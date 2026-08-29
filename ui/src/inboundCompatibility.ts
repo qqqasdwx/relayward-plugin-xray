@@ -3,7 +3,7 @@ import type { ProxyService } from "@/types"
 export const clientCores = ["xray", "sing-box", "mihomo"] as const
 
 export type ClientCore = (typeof clientCores)[number]
-export type CapabilityID = "vless" | "vision" | "reality" | "raw-http" | "vless-encryption" | "mldsa" | "spider-x"
+export type CapabilityID = "vless" | "vision" | "reality" | "raw-http" | "vless-encryption" | "mldsa" | "spider-x" | "shadowsocks" | "shadowsocks-2022"
 export type SupportEvidence =
   | { status: "supported"; version: string; evidence: "minimum" | "verified"; rank: number }
   | { status: "not-generated" }
@@ -79,6 +79,24 @@ export const capabilities: Record<CapabilityID, CapabilityDefinition> = {
       mihomo: { status: "optional-ignored" },
     },
   },
+  shadowsocks: {
+    label: "Shadowsocks",
+    restricted: false,
+    cores: {
+      xray: verified("26.3.27", 100),
+      "sing-box": verified("1.13.2", 100),
+      mihomo: verified("1.19.29", 100),
+    },
+  },
+  "shadowsocks-2022": {
+    label: "Shadowsocks 2022",
+    restricted: false,
+    cores: {
+      xray: verified("26.3.27", 200),
+      "sing-box": verified("1.13.2", 200),
+      mihomo: verified("1.19.29", 200),
+    },
+  },
 }
 
 export interface CoreCompatibility {
@@ -89,12 +107,17 @@ export interface CoreCompatibility {
 }
 
 export function activeCapabilities(service: ProxyService): CapabilityID[] {
+  if (service.type === "shadowsocks" && service.shadowsocks != null) {
+    return service.shadowsocks.method.startsWith("2022-")
+      ? ["shadowsocks", "shadowsocks-2022"]
+      : ["shadowsocks"]
+  }
   const active: CapabilityID[] = ["vless", "reality"]
-  if (service.vless_reality.flow !== "") active.push("vision")
+  if (service.vless_reality?.flow !== "") active.push("vision")
   if (service.tcp.header.type === "http") active.push("raw-http")
-  if (service.vless_reality.encryption.trim() !== "" && service.vless_reality.encryption.trim() !== "none") active.push("vless-encryption")
-  if (service.vless_reality.mldsa65_verify.trim() !== "") active.push("mldsa")
-  if (service.vless_reality.spider_x !== "" && service.vless_reality.spider_x !== "/") active.push("spider-x")
+  if (service.vless_reality?.encryption.trim() !== "" && service.vless_reality?.encryption.trim() !== "none") active.push("vless-encryption")
+  if (service.vless_reality?.mldsa65_verify.trim() !== "") active.push("mldsa")
+  if (service.vless_reality?.spider_x !== "" && service.vless_reality?.spider_x !== "/") active.push("spider-x")
   return active
 }
 

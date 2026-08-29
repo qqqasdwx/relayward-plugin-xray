@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
@@ -156,6 +156,43 @@ func TestRenderOmitsDisabledServices(t *testing.T) {
 	}
 	if len(generated.DNS) != 0 || generated.Outbounds[0].Settings.DomainStrategy != "" {
 		t.Fatal("disabled DNS unexpectedly changed the Xray configuration")
+	}
+}
+
+func TestRenderShadowsocks2022Inbound(t *testing.T) {
+	t.Parallel()
+	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+		Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
+		Listen: "0.0.0.0", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+		Shadowsocks: &config.EditableShadowsocks{
+			Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := Render(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated struct {
+		Inbounds []struct {
+			Tag      string         `json:"tag"`
+			Protocol string         `json:"protocol"`
+			Settings map[string]any `json:"settings"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(raw, &generated); err != nil {
+		t.Fatal(err)
+	}
+	if len(generated.Inbounds) != 2 || generated.Inbounds[1].Tag != "shadowsocks-main" ||
+		generated.Inbounds[1].Protocol != "shadowsocks" ||
+		generated.Inbounds[1].Settings["method"] != config.ShadowsocksMethod2022AES256 ||
+		generated.Inbounds[1].Settings["password"] != value.Services[0].Shadowsocks.ServerKey ||
+		generated.Inbounds[1].Settings["network"] != config.ShadowsocksNetworkTCPUDP ||
+		len(generated.Inbounds[1].Settings["clients"].([]any)) != 1 ||
+		generated.Inbounds[1].Settings["clients"].([]any)[0].(map[string]any)["email"] != "relayward:bootstrap:shadowsocks-main" {
+		t.Fatalf("generated Shadowsocks inbound = %s", raw)
 	}
 }
 
@@ -344,7 +381,7 @@ func TestRenderDNSLocalTransports(t *testing.T) {
 
 func TestSupportsOnlyRegisteredServiceTypes(t *testing.T) {
 	t.Parallel()
-	if !SupportsServiceType(config.ServiceTypeVLESSReality) || SupportsServiceType("unknown") {
+	if !SupportsServiceType(config.ServiceTypeVLESSReality) || !SupportsServiceType(config.ServiceTypeShadowsocks) || SupportsServiceType("unknown") {
 		t.Fatal("Xray renderer service type support is inconsistent")
 	}
 }

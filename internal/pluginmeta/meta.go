@@ -1,3 +1,3 @@
 package pluginmeta
 
-const ID = "io.relayward.xray"
+const ID = "io.github.qqqasdwx.relayward-xray"

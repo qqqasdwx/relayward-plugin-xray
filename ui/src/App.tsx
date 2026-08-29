@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import { RefreshCw, Save } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { Activity, Globe2, Network, RefreshCw, Route, Save } from "lucide-react"
 
 import { DNSPanel } from "@/components/DNSPanel"
 import { DNSServerDialog } from "@/components/DNSServerDialog"
@@ -9,17 +9,21 @@ import { RuntimePanel } from "@/components/RuntimePanel"
 import { ServiceDialog } from "@/components/ServiceDialog"
 import { ServicesPanel } from "@/components/ServicesPanel"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardFooter } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  configurationChanges,
   configurationForSave,
   configurationFromStored,
+  configurationsEqual,
   moveItem,
   nextDNSServerDefaults,
   nextRoutingRuleDefaults,
   nextServiceDefaults,
+  type ConfigurationChanges,
+  type NamedChanges,
 } from "@/configuration"
-import { translator } from "@/i18n"
+import { translator, type Translator } from "@/i18n"
 import { createClient, type RelaywardUIClient } from "@/sdk"
 import type {
   DNSConfiguration,
@@ -92,19 +96,26 @@ function isLimitFallback(value: unknown): boolean {
 }
 
 function isService(value: unknown): value is ProxyService {
-  if (!isRecord(value) || !isRecord(value.vless_reality) || !isRecord(value.tcp) ||
-      !isRecord(value.tcp.header) || !isRecord(value.sniffing)) return false
+  if (!isRecord(value) || !isRecord(value.tcp) || !isRecord(value.tcp.header) || !isRecord(value.sniffing)) return false
   if (value.sockopt != null && !isSocketSettings(value.sockopt)) return false
-  if (value.vless_reality.limit_fallback_upload != null && !isLimitFallback(value.vless_reality.limit_fallback_upload)) return false
-  if (value.vless_reality.limit_fallback_download != null && !isLimitFallback(value.vless_reality.limit_fallback_download)) return false
-  return typeof value.type === "string" && typeof value.enabled === "boolean" &&
+  const common = typeof value.type === "string" && typeof value.enabled === "boolean" &&
     typeof value.service_id === "string" && typeof value.display_name === "string" &&
     typeof value.listen === "string" && Number.isInteger(value.port) && typeof value.public_host === "string" && Number.isInteger(value.public_port) &&
     typeof value.tcp.accept_proxy_protocol === "boolean" && isTCPHeader(value.tcp.header) &&
     typeof value.sniffing.enabled === "boolean" && isStringArray(value.sniffing.dest_override) &&
     typeof value.sniffing.metadata_only === "boolean" && typeof value.sniffing.route_only === "boolean" &&
-    isStringArray(value.sniffing.ips_excluded) && isStringArray(value.sniffing.domains_excluded) &&
-    typeof value.vless_reality.show === "boolean" && Number.isInteger(value.vless_reality.xver) &&
+    isStringArray(value.sniffing.ips_excluded) && isStringArray(value.sniffing.domains_excluded)
+  if (!common) return false
+  if (value.type === "shadowsocks") {
+    return value.vless_reality == null && isRecord(value.shadowsocks) &&
+      ["2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305"].includes(String(value.shadowsocks.method)) &&
+      ["tcp", "udp", "tcp,udp"].includes(String(value.shadowsocks.network)) &&
+      typeof value.shadowsocks.server_key === "string" && typeof value.shadowsocks.iv_check === "boolean"
+  }
+  if (value.type !== "vless-reality" || !isRecord(value.vless_reality) || value.shadowsocks != null) return false
+  if (value.vless_reality.limit_fallback_upload != null && !isLimitFallback(value.vless_reality.limit_fallback_upload)) return false
+  if (value.vless_reality.limit_fallback_download != null && !isLimitFallback(value.vless_reality.limit_fallback_download)) return false
+  return typeof value.vless_reality.show === "boolean" && Number.isInteger(value.vless_reality.xver) &&
     typeof value.vless_reality.decryption === "string" && typeof value.vless_reality.encryption === "string" &&
     isNumberArray(value.vless_reality.test_seed) && Array.isArray(value.vless_reality.fallbacks) && value.vless_reality.fallbacks.every(isFallback) &&
     typeof value.vless_reality.target === "string" && isStringArray(value.vless_reality.server_names) &&
@@ -178,14 +189,17 @@ export function App() {
   const [serviceTypes, setServiceTypes] = useState<ServiceType[]>([])
   const [nodeID, setNodeID] = useState("")
   const [stored, setStored] = useState<StoredConfiguration | null>(null)
+  const [baseline, setBaseline] = useState<EditableConfiguration | null>(null)
   const [draft, setDraft] = useState<EditableConfiguration | null>(null)
   const [busy, setBusy] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState("")
   const [error, setError] = useState("")
   const [serviceDialog, setServiceDialog] = useState<DialogState<ProxyService> | null>(null)
   const [routingDialog, setRoutingDialog] = useState<DialogState<RoutingRule> | null>(null)
   const [dnsDialog, setDNSDialog] = useState<DialogState<DNSServer> | null>(null)
   const t = useMemo(() => translator(locale), [locale])
+  const dirty = useMemo(() => draft != null && baseline != null && !configurationsEqual(baseline, draft), [baseline, draft])
   useEffect(() => {
     let cancelled = false
     let client: RelaywardUIClient | null = null
@@ -207,9 +221,11 @@ export function App() {
         if (types.length === 0) throw new Error("Relayward returned invalid service types")
         const loaded = parseStored(await client.rpc("configuration.get", { node_id: scopedNodeID }))
         if (cancelled) return
+        const initial = configurationFromStored(loaded, context.locale)
         setServiceTypes(types)
         setStored(loaded)
-        setDraft(configurationFromStored(loaded, context.locale))
+        setBaseline(configurationForSave(initial))
+        setDraft(initial)
       } catch (cause) {
         if (!cancelled) setError(errorMessage(cause, translator(bootstrapLocale)("The request could not be completed.")))
       } finally {
@@ -226,7 +242,7 @@ export function App() {
 
   function markChanged(value: EditableConfiguration) {
     setDraft(value)
-    setNotice(t("Configuration changes are ready. Save to publish them."))
+    setNotice("")
     setError("")
   }
 
@@ -238,8 +254,10 @@ export function App() {
     setError("")
     try {
       const loaded = parseStored(await client.rpc("configuration.get", { node_id: nodeID }))
+      const refreshed = configurationFromStored(loaded, locale)
       setStored(loaded)
-      setDraft(configurationFromStored(loaded, locale))
+      setBaseline(configurationForSave(refreshed))
+      setDraft(refreshed)
     } catch (cause) {
       setError(errorMessage(cause, t("The request could not be completed.")))
     } finally {
@@ -261,28 +279,37 @@ export function App() {
   async function saveConfiguration(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const client = clientRef.current
-    if (client == null || draft == null || nodeID === "" || busy || !formRef.current?.reportValidity()) return
+    if (client == null || draft == null || baseline == null || nodeID === "" || busy || saving || !dirty || !formRef.current?.reportValidity()) return
     if (draft.dns.enabled && !draft.dns.servers.some((server) => server.enabled)) {
       setError(t("Enabled DNS requires at least one enabled server."))
       return
     }
-    setBusy(true)
-    setNotice("")
-    setError("")
+    setSaving(true)
     try {
+      const confirmed = await client.confirm({
+        title: t("Save Xray configuration?"),
+        message: formatConfigurationChanges(configurationChanges(baseline, draft), t),
+        confirm_label: t("Save configuration"),
+        destructive: false,
+      })
+      if (!confirmed) return
+      setNotice("")
+      setError("")
       await client.rpc("configuration.save", {
         node_id: nodeID,
         expected_generation: stored?.exists ? stored.generation ?? 0 : 0,
         configuration: configurationForSave(draft),
       })
       const loaded = parseStored(await client.rpc("configuration.get", { node_id: nodeID }))
+      const saved = configurationFromStored(loaded, locale)
       setStored(loaded)
-      setDraft(configurationFromStored(loaded, locale))
+      setBaseline(configurationForSave(saved))
+      setDraft(saved)
       setNotice(t("Configuration saved."))
     } catch (cause) {
       setError(errorMessage(cause, t("The request could not be completed.")))
     } finally {
-      setBusy(false)
+      setSaving(false)
     }
   }
 
@@ -351,58 +378,128 @@ export function App() {
     if (draft != null) markChanged({ ...draft, dns: value })
   }
 
+  const interactionBusy = busy || saving
+  const actions = (
+    <ConfigurationActions
+      stored={stored}
+      dirty={dirty}
+      busy={interactionBusy}
+      saving={saving}
+      t={t}
+      onRefresh={() => void refreshConfiguration()}
+    />
+  )
+
   return (
     <main className="grid min-h-screen grid-cols-[minmax(0,1fr)] content-start gap-6 p-4 lg:p-6">
       {notice ? <div role="status" className="rounded-lg border bg-muted/50 px-4 py-3 text-sm">{notice}</div> : null}
       {error ? <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       {draft != null ? (
-        <Card className="min-w-0">
-          <form ref={formRef} className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6" onSubmit={(event) => void saveConfiguration(event)}>
-            <CardContent className="min-w-0">
-              <Tabs defaultValue="services" className="min-w-0 gap-6">
-                <div className="overflow-x-auto">
-                  <TabsList className="grid w-full min-w-[28rem] grid-cols-4">
-                    <TabsTrigger value="services">{t("Inbounds")}</TabsTrigger>
-                    <TabsTrigger value="routing">{t("Routing")}</TabsTrigger>
-                    <TabsTrigger value="dns">{t("DNS")}</TabsTrigger>
-                    <TabsTrigger value="runtime">{t("Runtime")}</TabsTrigger>
-                  </TabsList>
-                </div>
-                <TabsContent value="services" className="min-w-0">
-                  <ServicesPanel services={draft.services} busy={busy} t={t} onAdd={openNewService} onEdit={(service) => setServiceDialog({ initial: service, editingID: service.service_id })} onDelete={(service) => void deleteService(service)} />
-                </TabsContent>
-                <TabsContent value="routing" className="min-w-0">
-                  <RoutingPanel rules={draft.routing.rules} busy={busy} t={t} onAdd={openNewRoutingRule} onEdit={(rule) => setRoutingDialog({ initial: rule, editingID: rule.rule_id })} onDelete={(rule) => void deleteRoutingRule(rule)} onMove={(index, offset) => markChanged({ ...draft, routing: { rules: moveItem(draft.routing.rules, index, offset) } })} />
-                </TabsContent>
-                <TabsContent value="dns" className="min-w-0">
-                  <DNSPanel value={draft.dns} busy={busy} t={t} onChange={changeDNS} onAdd={openNewDNSServer} onEdit={(server) => setDNSDialog({ initial: server, editingID: server.server_id })} onDelete={(server) => void deleteDNSServer(server)} onMove={(index, offset) => changeDNS({ ...draft.dns, servers: moveItem(draft.dns.servers, index, offset) })} />
-                </TabsContent>
-                <TabsContent value="runtime" className="min-w-0">
-                  <RuntimePanel value={draft} busy={busy} t={t} onChange={markChanged} />
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-            <CardFooter className="flex-col items-stretch justify-between gap-4 border-t sm:flex-row sm:items-center">
-              <span className="text-sm text-muted-foreground">{stored?.exists ? t("Generation {generation}", { generation: stored.generation ?? 0 }) : t("Not configured")}</span>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Button type="button" variant="outline" disabled={busy} onClick={() => void refreshConfiguration()}>
-                  <RefreshCw className={busy ? "animate-spin" : undefined} />{t("Refresh")}
-                </Button>
-                <Button type="submit" disabled={busy}>
-                  <Save />{busy ? t("Saving...") : t("Save configuration")}
-                </Button>
-              </div>
-            </CardFooter>
-          </form>
-        </Card>
+        <form ref={formRef} className="min-w-0" onSubmit={(event) => void saveConfiguration(event)}>
+          <Tabs defaultValue="services" orientation="vertical" className="min-w-0 gap-4 md:grid md:grid-cols-[11rem_minmax(0,1fr)] md:items-start md:gap-6">
+            <PluginTabNavigation t={t} />
+            <ConfigurationTab value="services" actions={actions}>
+              <ServicesPanel services={draft.services} busy={interactionBusy} t={t} onAdd={openNewService} onEdit={(service) => setServiceDialog({ initial: service, editingID: service.service_id })} onDelete={(service) => void deleteService(service)} />
+            </ConfigurationTab>
+            <ConfigurationTab value="routing" actions={actions}>
+              <RoutingPanel rules={draft.routing.rules} busy={interactionBusy} t={t} onAdd={openNewRoutingRule} onEdit={(rule) => setRoutingDialog({ initial: rule, editingID: rule.rule_id })} onDelete={(rule) => void deleteRoutingRule(rule)} onMove={(index, offset) => markChanged({ ...draft, routing: { rules: moveItem(draft.routing.rules, index, offset) } })} />
+            </ConfigurationTab>
+            <ConfigurationTab value="dns" actions={actions}>
+              <DNSPanel value={draft.dns} busy={interactionBusy} t={t} onChange={changeDNS} onAdd={openNewDNSServer} onEdit={(server) => setDNSDialog({ initial: server, editingID: server.server_id })} onDelete={(server) => void deleteDNSServer(server)} onMove={(index, offset) => changeDNS({ ...draft.dns, servers: moveItem(draft.dns.servers, index, offset) })} />
+            </ConfigurationTab>
+            <ConfigurationTab value="runtime" actions={actions}>
+              <RuntimePanel value={draft} busy={interactionBusy} t={t} onChange={markChanged} />
+            </ConfigurationTab>
+          </Tabs>
+        </form>
       ) : busy ? (
         <Card><CardContent className="grid min-h-40 place-content-center text-sm text-muted-foreground">{t("Loading...")}</CardContent></Card>
       ) : null}
 
-      {serviceDialog ? <ServiceDialog initial={serviceDialog.initial} editingID={serviceDialog.editingID} existingIDs={draft?.services.map((service) => service.service_id) ?? []} t={t} onClose={() => setServiceDialog(null)} onApply={applyService} /> : null}
+      {serviceDialog ? <ServiceDialog initial={serviceDialog.initial} editingID={serviceDialog.editingID} existingIDs={draft?.services.map((service) => service.service_id) ?? []} serviceTypes={serviceTypes} createService={(type) => nextServiceDefaults(draft?.services ?? [], serviceTypes, type)} t={t} onClose={() => setServiceDialog(null)} onApply={applyService} /> : null}
       {routingDialog ? <RoutingRuleDialog initial={routingDialog.initial} editingID={routingDialog.editingID} existingIDs={draft?.routing.rules.map((rule) => rule.rule_id) ?? []} t={t} onClose={() => setRoutingDialog(null)} onApply={applyRoutingRule} /> : null}
       {dnsDialog ? <DNSServerDialog initial={dnsDialog.initial} editingID={dnsDialog.editingID} existingIDs={draft?.dns.servers.map((server) => server.server_id) ?? []} t={t} onClose={() => setDNSDialog(null)} onApply={applyDNSServer} /> : null}
     </main>
+  )
+}
+
+function ConfigurationTab({ value, actions, children }: { value: string; actions: ReactNode; children: ReactNode }) {
+  return (
+    <TabsContent value={value} className="min-w-0">
+      <Card className="min-w-0">
+        <CardContent className="grid min-w-0 gap-6">
+          {children}
+          {actions}
+        </CardContent>
+      </Card>
+    </TabsContent>
+  )
+}
+
+function ConfigurationActions({ stored, dirty, busy, saving, t, onRefresh }: {
+  stored: StoredConfiguration | null
+  dirty: boolean
+  busy: boolean
+  saving: boolean
+  t: Translator
+  onRefresh: () => void
+}) {
+  return (
+    <div className="flex flex-col items-stretch justify-between gap-4 border-t pt-6 sm:flex-row sm:items-center">
+      <span className="text-sm text-muted-foreground">{stored?.exists ? t("Generation {generation}", { generation: stored.generation ?? 0 }) : t("Not configured")}</span>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Button type="button" variant="outline" disabled={busy} onClick={onRefresh}>
+          <RefreshCw className={busy && !saving ? "animate-spin" : undefined} />{t("Refresh")}
+        </Button>
+        <Button type="submit" disabled={busy || !dirty}>
+          <Save />{saving ? t("Saving...") : t("Save configuration")}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function formatConfigurationChanges(changes: ConfigurationChanges, t: Translator): string {
+  const lines = [t("The following changes will be published:")]
+  if (changes.runtime.length > 0) {
+    const fields = changes.runtime.map((field) => t(field === "xray_version" ? "Xray version" : "Local API port"))
+    lines.push(`• ${t("Runtime")}: ${fields.join(t(", "))}`)
+  }
+  appendNamedChanges(lines, t("Inbounds"), changes.services, t)
+  appendNamedChanges(lines, t("Routing"), changes.routing, t)
+  if (changes.dns.length > 0) {
+    const fields = changes.dns.map((field) => t(field === "enabled" ? "Enabled status" : "Query strategy"))
+    lines.push(`• ${t("DNS")}: ${fields.join(t(", "))}`)
+  }
+  appendNamedChanges(lines, t("DNS servers"), changes.dnsServers, t)
+  const message = lines.join("\n")
+  if (message.length <= 900) return message
+  const suffix = `\n${t("Additional changes are omitted.")}`
+  return `${message.slice(0, 900 - suffix.length)}${suffix}`
+}
+
+function appendNamedChanges(lines: string[], label: string, changes: NamedChanges, t: Translator) {
+  const details: string[] = []
+  if (changes.added.length > 0) details.push(t("Added: {items}", { items: summarizeNames(changes.added, t) }))
+  if (changes.updated.length > 0) details.push(t("Modified: {items}", { items: summarizeNames(changes.updated, t) }))
+  if (changes.removed.length > 0) details.push(t("Removed: {items}", { items: summarizeNames(changes.removed, t) }))
+  if (changes.reordered) details.push(t("Order changed"))
+  if (details.length > 0) lines.push(`• ${label}: ${details.join(t("; "))}`)
+}
+
+function summarizeNames(names: string[], t: Translator): string {
+  const visible = names.slice(0, 3).join(t(", "))
+  return names.length > 3 ? `${visible}${t(" and {count} more", { count: names.length - 3 })}` : visible
+}
+
+function PluginTabNavigation({ t }: { t: Translator }) {
+  return (
+    <TabsList variant="sidebar" aria-label={t("Xray configuration")}>
+      <TabsTrigger variant="sidebar" value="services"><Network />{t("Inbounds")}</TabsTrigger>
+      <TabsTrigger variant="sidebar" value="routing"><Route />{t("Routing")}</TabsTrigger>
+      <TabsTrigger variant="sidebar" value="dns"><Globe2 />{t("DNS")}</TabsTrigger>
+      <TabsTrigger variant="sidebar" value="runtime"><Activity />{t("Runtime")}</TabsTrigger>
+    </TabsList>
   )
 }

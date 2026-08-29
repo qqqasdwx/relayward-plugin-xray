@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 func SupportsServiceType(serviceType string) bool {
-	return serviceType == config.ServiceTypeVLESSReality
+	return serviceType == config.ServiceTypeVLESSReality || serviceType == config.ServiceTypeShadowsocks
 }
 
 func Render(value config.Configuration) ([]byte, error) {
@@ -28,7 +28,7 @@ func Render(value config.Configuration) ([]byte, error) {
 		if !service.Enabled {
 			continue
 		}
-		inbound, err := renderService(service, routingNeedsSniffing)
+		inbound, err := renderService(value, service, routingNeedsSniffing)
 		if err != nil {
 			return nil, err
 		}
@@ -62,13 +62,52 @@ func Render(value config.Configuration) ([]byte, error) {
 	return json.Marshal(result)
 }
 
-func renderService(service config.Service, routingNeedsSniffing bool) (any, error) {
+func renderService(configuration config.Configuration, service config.Service, routingNeedsSniffing bool) (any, error) {
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
 		return renderVLESSReality(service, routingNeedsSniffing), nil
+	case config.ServiceTypeShadowsocks:
+		return renderShadowsocks(configuration, service, routingNeedsSniffing)
 	default:
 		return nil, fmt.Errorf("unsupported Xray service type %q", service.Type)
 	}
+}
+
+func renderShadowsocks(configuration config.Configuration, service config.Service, routingNeedsSniffing bool) (any, error) {
+	shadowsocks := service.Shadowsocks
+	settings := map[string]any{
+		"clients": []any{},
+		"network": shadowsocks.Network,
+	}
+	if config.IsShadowsocks2022(shadowsocks.Method) {
+		bootstrapKey, err := config.DeriveShadowsocksPassword(
+			configuration.CredentialSeed, "bootstrap", service.ServiceID, shadowsocks.Method,
+		)
+		if err != nil {
+			return nil, err
+		}
+		settings["method"] = shadowsocks.Method
+		settings["password"] = shadowsocks.ServerKey
+		settings["clients"] = []any{map[string]any{
+			"email":    "relayward:bootstrap:" + service.ServiceID,
+			"password": bootstrapKey,
+		}}
+	}
+	inbound := map[string]any{
+		"tag": service.ServiceID, "listen": service.Listen, "port": service.Port,
+		"protocol": "shadowsocks", "settings": settings,
+	}
+	if service.Sockopt != nil {
+		inbound["streamSettings"] = map[string]any{"sockopt": renderSocketSettings(*service.Sockopt)}
+	}
+	if service.Sniffing.Enabled {
+		inbound["sniffing"] = renderSniffing(service.Sniffing)
+	} else if routingNeedsSniffing {
+		inbound["sniffing"] = renderSniffing(config.Sniffing{
+			Enabled: true, DestOverride: []string{"http", "tls", "quic"}, RouteOnly: true,
+		})
+	}
+	return inbound, nil
 }
 
 func renderVLESSReality(service config.Service, routingNeedsSniffing bool) any {

@@ -17,12 +17,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/center"
-	"github.com/Relayward/relayward-plugin-xray/internal/node"
-	"github.com/Relayward/relayward-plugin-xray/internal/pluginmeta"
-	pluginsocket "github.com/Relayward/relayward-plugin-xray/internal/socket"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayrelease"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayruntime"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/center"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/node"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/pluginmeta"
+	pluginsocket "github.com/qqqasdwx/relayward-plugin-xray/internal/socket"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayrelease"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayruntime"
 )
 
 var version = "0.0.0-dev"

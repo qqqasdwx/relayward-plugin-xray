@@ -1,10 +1,10 @@
-# Relayward Xray Plugin Plan
+# Xray Plugin for Relayward Plan
 
 ## Goal
 
-Provide the official Xray runtime integration for Relayward without moving proxy-core concepts into the Relayward kernel. The plugin owns Xray installation, node configuration, runtime control, telemetry, dynamic blocking, subscription fragments, and its sandboxed administration page.
+Provide an independently maintained Xray runtime integration for the maintainer's Relayward deployments without moving proxy-core concepts into the Relayward kernel. The plugin owns Xray installation, node configuration, runtime control, telemetry, dynamic blocking, subscription fragments, and its sandboxed administration page.
 
-All stages target Linux AMD64 and official stable Xray releases. There is no compatibility requirement for the retired single-service configuration or legacy 3x-ui data unless that requirement is approved before a formal Relayward production release.
+All stages target Linux AMD64 and official stable Xray releases. Scope is driven by real deployment requirements rather than complete Xray feature coverage. Existing configurations created for a different plugin ID are not migrated or read by this plugin.
 
 ## Design Rules
 
@@ -43,13 +43,18 @@ No additional protocol or transport is selected by this stage. A service type is
 
 ## Stage 3: Additional Inbound Types
 
-Status: requirements pending.
+Status: Shadowsocks implemented and locally validated; further inbound types require separate approval.
 
-- Add approved protocol and transport combinations one vertical slice at a time.
+- Support Shadowsocks 2022 AES and traditional AEAD methods over TCP, UDP, or both.
+- Derive an independent credential for every authorization and service, including the server-key and user-key form required by Shadowsocks 2022 multi-user mode.
+- Render Shadowsocks URI, Mihomo, and sing-box subscription contributions.
+- Reuse Xray service control, traffic, activity, and dynamic-blocking behavior for Shadowsocks services.
+- Validate Shadowsocks configuration startup and dynamic user addition against an official Xray release.
+- Add further approved protocol and transport combinations one vertical slice at a time.
 - For each slice, implement validation, Xray generation, runtime user control, counters, activity, dynamic blocking, all supported subscription formats, UI, and official-Xray integration coverage together.
 - Introduce certificate lifecycle support before any inbound type that requires managed TLS certificates.
 
-Protocol priority is intentionally not fixed in this plan. It must be chosen from actual deployment and client requirements rather than inherited 3x-ui feature breadth.
+Further protocol priority is intentionally not fixed in this plan. It must be chosen from actual deployment and client requirements rather than inherited 3x-ui feature breadth.
 
 ## Stage 4: Routing, DNS, and Outbound Policy
 

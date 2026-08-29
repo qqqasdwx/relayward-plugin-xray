@@ -26,7 +26,7 @@ export function RuntimePanel({ value, busy, t, onChange }: {
         </div>
         <div className="grid min-w-0 gap-2">
           <Label>{t("Supported transport")}</Label>
-          <div className="flex min-h-9 min-w-0 items-center break-words rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">VLESS + REALITY + TCP Vision</div>
+          <div className="flex min-h-9 min-w-0 items-center break-words rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">VLESS REALITY · Shadowsocks</div>
         </div>
       </div>
     </div>

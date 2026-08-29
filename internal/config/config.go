@@ -1,4 +1,4 @@
-// Package config owns the structured Xray configuration understood by the official Relayward plugin.
+// Package config owns the structured Xray configuration managed by this plugin.
 package config
 
 import (
@@ -22,6 +22,7 @@ import (
 
 const (
 	ServiceTypeVLESSReality = "vless-reality"
+	ServiceTypeShadowsocks  = "shadowsocks"
 	VLESSVisionFlow         = "xtls-rprx-vision"
 	MaximumServices         = 64
 	MaximumRoutingRules     = 128
@@ -56,6 +57,7 @@ type Service struct {
 	Sockopt      *SocketSettings `json:"sockopt,omitempty"`
 	Sniffing     Sniffing        `json:"sniffing"`
 	VLESSReality *VLESSReality   `json:"vless_reality,omitempty"`
+	Shadowsocks  *Shadowsocks    `json:"shadowsocks,omitempty"`
 }
 
 type EditableConfiguration struct {
@@ -79,6 +81,7 @@ type EditableService struct {
 	Sockopt      *SocketSettings       `json:"sockopt,omitempty"`
 	Sniffing     Sniffing              `json:"sniffing"`
 	VLESSReality *EditableVLESSReality `json:"vless_reality,omitempty"`
+	Shadowsocks  *EditableShadowsocks  `json:"shadowsocks,omitempty"`
 }
 
 func Editable(value Configuration) EditableConfiguration {
@@ -91,6 +94,7 @@ func Editable(value Configuration) EditableConfiguration {
 			TCP: cloneTCPSettings(service.TCP), Sockopt: cloneSocketSettings(service.Sockopt),
 			Sniffing:     cloneSniffing(service.Sniffing),
 			VLESSReality: editableVLESSReality(service.VLESSReality),
+			Shadowsocks:  editableShadowsocks(service.Shadowsocks),
 		}
 	}
 	return EditableConfiguration{
@@ -208,8 +212,10 @@ func Validate(value Configuration) error {
 		if err := validateCommonService(value.APIPort, service, field); err != nil {
 			return err
 		}
-		if err := validateTCPSettings(service.TCP, field+".tcp"); err != nil {
-			return err
+		if service.Type == ServiceTypeVLESSReality {
+			if err := validateTCPSettings(service.TCP, field+".tcp"); err != nil {
+				return err
+			}
 		}
 		if err := validateSocketSettings(service.Sockopt, field+".sockopt"); err != nil {
 			return err
@@ -298,6 +304,29 @@ func DeriveCredential(seed, authorizationID, serviceID string) (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
 }
 
+func DeriveShadowsocksPassword(seed, authorizationID, serviceID, method string) (string, error) {
+	if !IsShadowsocksMethod(method) {
+		return "", fmt.Errorf("unsupported Shadowsocks method %q", method)
+	}
+	if !IsShadowsocks2022(method) {
+		return DeriveCredential(seed, authorizationID, serviceID)
+	}
+	key, err := decodeKey("credential_seed", seed)
+	if err != nil {
+		return "", err
+	}
+	if authorizationID == "" || serviceID == "" || strings.ContainsRune(authorizationID, 0) || strings.ContainsRune(serviceID, 0) {
+		return "", fmt.Errorf("authorization and service IDs are required")
+	}
+	hash := hmac.New(sha256.New, key)
+	_, _ = hash.Write([]byte("shadowsocks-2022"))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(authorizationID))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(serviceID))
+	return base64.StdEncoding.EncodeToString(hash.Sum(nil)[:ShadowsocksKeyBytes(method)]), nil
+}
+
 func UserEmail(authorizationID, serviceID string) string {
 	return "relayward:" + authorizationID + ":" + serviceID
 }
@@ -317,6 +346,7 @@ func clone(value Configuration) Configuration {
 		value.Services[index].Sockopt = cloneSocketSettings(value.Services[index].Sockopt)
 		value.Services[index].Sniffing = cloneSniffing(value.Services[index].Sniffing)
 		value.Services[index].VLESSReality = cloneVLESSReality(value.Services[index].VLESSReality)
+		value.Services[index].Shadowsocks = cloneShadowsocks(value.Services[index].Shadowsocks)
 	}
 	value.Routing = cloneRouting(value.Routing)
 	value.DNS = cloneDNS(value.DNS)

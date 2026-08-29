@@ -31,6 +31,21 @@ export interface VLESSReality {
   spider_x: string
 }
 
+export type ShadowsocksMethod =
+  | "2022-blake3-aes-128-gcm"
+  | "2022-blake3-aes-256-gcm"
+  | "aes-128-gcm"
+  | "aes-256-gcm"
+  | "chacha20-ietf-poly1305"
+  | "xchacha20-ietf-poly1305"
+
+export interface ShadowsocksSettings {
+  method: ShadowsocksMethod
+  network: "tcp" | "udp" | "tcp,udp"
+  server_key: string
+  iv_check: boolean
+}
+
 export interface VLESSFallback {
   name: string
   alpn: string
@@ -114,7 +129,8 @@ export interface ProxyService {
   tcp: TCPSettings
   sockopt?: SocketSettings
   sniffing: Sniffing
-  vless_reality: VLESSReality
+  vless_reality?: VLESSReality
+  shadowsocks?: ShadowsocksSettings
 }
 
 export type RoutingAction = "blocked" | "direct"

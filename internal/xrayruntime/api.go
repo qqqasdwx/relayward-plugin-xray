@@ -3,6 +3,7 @@ package xrayruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/netip"
@@ -18,8 +19,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/protoadapt"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayconfig"
 )
 
 const xrayAPITimeout = 3 * time.Second
@@ -61,7 +62,7 @@ type runtimeAPI interface {
 }
 
 func SupportsServiceType(serviceType string) bool {
-	return serviceType == config.ServiceTypeVLESSReality
+	return serviceType == config.ServiceTypeVLESSReality || serviceType == config.ServiceTypeShadowsocks
 }
 
 func connectXrayAPI(parent context.Context, configuration config.Configuration) (*xrayAPI, error) {
@@ -347,8 +348,19 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 			return runtimeCredential{}, err
 		}
 		return runtimeCredential{
-			id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.VLESSReality.Flow,
+			serviceType: service.Type, id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.VLESSReality.Flow,
 			testSeed: append([]uint32(nil), service.VLESSReality.TestSeed...),
+		}, nil
+	case config.ServiceTypeShadowsocks:
+		password, err := config.DeriveShadowsocksPassword(
+			configuration.CredentialSeed, authorizationID, serviceID, service.Shadowsocks.Method,
+		)
+		if err != nil {
+			return runtimeCredential{}, err
+		}
+		return runtimeCredential{
+			serviceType: service.Type, email: config.UserEmail(authorizationID, serviceID),
+			password: password, method: service.Shadowsocks.Method, ivCheck: service.Shadowsocks.IVCheck,
 		}, nil
 	default:
 		return runtimeCredential{}, ErrUnsupportedService
@@ -356,10 +368,14 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 }
 
 type runtimeCredential struct {
-	id       string
-	email    string
-	flow     string
-	testSeed []uint32
+	serviceType string
+	id          string
+	email       string
+	flow        string
+	testSeed    []uint32
+	password    string
+	method      string
+	ivCheck     bool
 }
 
 func (manager *Manager) refreshTraffic(ctx context.Context, process *managedProcess) error {
@@ -434,14 +450,12 @@ func apiAddress(configuration config.Configuration) string {
 }
 
 func (api *xrayAPI) addUser(parent context.Context, inboundTag string, credential runtimeCredential) error {
-	account, err := marshalLegacy(&vlessAccount{
-		ID: credential.id, Flow: credential.flow, Encryption: "none", TestSeed: credential.testSeed,
-	})
+	accountType, account, err := marshalRuntimeAccount(credential)
 	if err != nil {
-		return errors.New("encode Xray VLESS account")
+		return err
 	}
 	operation, err := marshalLegacy(&addUserOperation{User: &protocolUser{
-		Email: credential.email, Account: &typedMessage{Type: "xray.proxy.vless.Account", Value: account},
+		Email: credential.email, Account: &typedMessage{Type: accountType, Value: account},
 	}})
 	if err != nil {
 		return errors.New("encode Xray user operation")
@@ -452,9 +466,43 @@ func (api *xrayAPI) addUser(parent context.Context, inboundTag string, credentia
 	ctx, cancel := context.WithTimeout(parent, xrayAPITimeout)
 	defer cancel()
 	if err := api.connection.Invoke(ctx, "/xray.app.proxyman.command.HandlerService/AlterInbound", request, &emptyMessage{}); err != nil {
-		return errors.New("add Xray user")
+		return fmt.Errorf("add Xray user: %w", err)
 	}
 	return nil
+}
+
+func marshalRuntimeAccount(credential runtimeCredential) (string, []byte, error) {
+	switch credential.serviceType {
+	case config.ServiceTypeVLESSReality:
+		raw, err := marshalLegacy(&vlessAccount{
+			ID: credential.id, Flow: credential.flow, Encryption: "none", TestSeed: credential.testSeed,
+		})
+		if err != nil {
+			return "", nil, errors.New("encode Xray VLESS account")
+		}
+		return "xray.proxy.vless.Account", raw, nil
+	case config.ServiceTypeShadowsocks:
+		if config.IsShadowsocks2022(credential.method) {
+			raw, err := marshalLegacy(&shadowsocks2022Account{Key: credential.password})
+			if err != nil {
+				return "", nil, errors.New("encode Xray Shadowsocks 2022 account")
+			}
+			return "xray.proxy.shadowsocks_2022.Account", raw, nil
+		}
+		cipherType, exists := config.ShadowsocksCipherType(credential.method)
+		if !exists {
+			return "", nil, errors.New("unsupported Xray Shadowsocks method")
+		}
+		raw, err := marshalLegacy(&shadowsocksAccount{
+			Password: credential.password, CipherType: cipherType, IVCheck: credential.ivCheck,
+		})
+		if err != nil {
+			return "", nil, errors.New("encode Xray Shadowsocks account")
+		}
+		return "xray.proxy.shadowsocks.Account", raw, nil
+	default:
+		return "", nil, ErrUnsupportedService
+	}
 }
 
 func (api *xrayAPI) removeUser(parent context.Context, inboundTag, email string) error {
@@ -647,6 +695,16 @@ type vlessAccount struct {
 	TestSeed   []uint32 `protobuf:"varint,9,rep,packed,name=testseed,proto3"`
 }
 
+type shadowsocksAccount struct {
+	Password   string `protobuf:"bytes,1,opt,name=password,proto3"`
+	CipherType int32  `protobuf:"varint,2,opt,name=cipher_type,json=cipherType,proto3"`
+	IVCheck    bool   `protobuf:"varint,3,opt,name=iv_check,json=ivCheck,proto3"`
+}
+
+type shadowsocks2022Account struct {
+	Key string `protobuf:"bytes,1,opt,name=key,proto3"`
+}
+
 type addUserOperation struct {
 	User *protocolUser `protobuf:"bytes,1,opt,name=user,proto3"`
 }
@@ -749,36 +807,42 @@ type addRuleRequest struct {
 
 type emptyMessage struct{}
 
-func (value *typedMessage) Reset()          { *value = typedMessage{} }
-func (*typedMessage) String() string        { return "" }
-func (*typedMessage) ProtoMessage()         {}
-func (value *protocolUser) Reset()          { *value = protocolUser{} }
-func (*protocolUser) String() string        { return "" }
-func (*protocolUser) ProtoMessage()         {}
-func (value *vlessAccount) Reset()          { *value = vlessAccount{} }
-func (*vlessAccount) String() string        { return "" }
-func (*vlessAccount) ProtoMessage()         {}
-func (value *addUserOperation) Reset()      { *value = addUserOperation{} }
-func (*addUserOperation) String() string    { return "" }
-func (*addUserOperation) ProtoMessage()     {}
-func (value *removeUserOperation) Reset()   { *value = removeUserOperation{} }
-func (*removeUserOperation) String() string { return "" }
-func (*removeUserOperation) ProtoMessage()  {}
-func (value *alterInboundRequest) Reset()   { *value = alterInboundRequest{} }
-func (*alterInboundRequest) String() string { return "" }
-func (*alterInboundRequest) ProtoMessage()  {}
-func (value *queryStatsRequest) Reset()     { *value = queryStatsRequest{} }
-func (*queryStatsRequest) String() string   { return "" }
-func (*queryStatsRequest) ProtoMessage()    {}
-func (value *queryStatsResponse) Reset()    { *value = queryStatsResponse{} }
-func (*queryStatsResponse) String() string  { return "" }
-func (*queryStatsResponse) ProtoMessage()   {}
-func (value *statMessage) Reset()           { *value = statMessage{} }
-func (*statMessage) String() string         { return "" }
-func (*statMessage) ProtoMessage()          {}
-func (value *getStatsRequest) Reset()       { *value = getStatsRequest{} }
-func (*getStatsRequest) String() string     { return "" }
-func (*getStatsRequest) ProtoMessage()      {}
+func (value *typedMessage) Reset()             { *value = typedMessage{} }
+func (*typedMessage) String() string           { return "" }
+func (*typedMessage) ProtoMessage()            {}
+func (value *protocolUser) Reset()             { *value = protocolUser{} }
+func (*protocolUser) String() string           { return "" }
+func (*protocolUser) ProtoMessage()            {}
+func (value *vlessAccount) Reset()             { *value = vlessAccount{} }
+func (*vlessAccount) String() string           { return "" }
+func (*vlessAccount) ProtoMessage()            {}
+func (value *shadowsocksAccount) Reset()       { *value = shadowsocksAccount{} }
+func (*shadowsocksAccount) String() string     { return "" }
+func (*shadowsocksAccount) ProtoMessage()      {}
+func (value *shadowsocks2022Account) Reset()   { *value = shadowsocks2022Account{} }
+func (*shadowsocks2022Account) String() string { return "" }
+func (*shadowsocks2022Account) ProtoMessage()  {}
+func (value *addUserOperation) Reset()         { *value = addUserOperation{} }
+func (*addUserOperation) String() string       { return "" }
+func (*addUserOperation) ProtoMessage()        {}
+func (value *removeUserOperation) Reset()      { *value = removeUserOperation{} }
+func (*removeUserOperation) String() string    { return "" }
+func (*removeUserOperation) ProtoMessage()     {}
+func (value *alterInboundRequest) Reset()      { *value = alterInboundRequest{} }
+func (*alterInboundRequest) String() string    { return "" }
+func (*alterInboundRequest) ProtoMessage()     {}
+func (value *queryStatsRequest) Reset()        { *value = queryStatsRequest{} }
+func (*queryStatsRequest) String() string      { return "" }
+func (*queryStatsRequest) ProtoMessage()       {}
+func (value *queryStatsResponse) Reset()       { *value = queryStatsResponse{} }
+func (*queryStatsResponse) String() string     { return "" }
+func (*queryStatsResponse) ProtoMessage()      {}
+func (value *statMessage) Reset()              { *value = statMessage{} }
+func (*statMessage) String() string            { return "" }
+func (*statMessage) ProtoMessage()             {}
+func (value *getStatsRequest) Reset()          { *value = getStatsRequest{} }
+func (*getStatsRequest) String() string        { return "" }
+func (*getStatsRequest) ProtoMessage()         {}
 func (value *getStatsOnlineIPListResponse) Reset() {
 	*value = getStatsOnlineIPListResponse{}
 }

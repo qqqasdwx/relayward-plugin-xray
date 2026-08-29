@@ -37,7 +37,7 @@ export function cloneServices(values: ProxyService[]): ProxyService[] {
       ips_excluded: [...service.sniffing.ips_excluded],
       domains_excluded: [...service.sniffing.domains_excluded],
     },
-    vless_reality: {
+    vless_reality: service.vless_reality == null ? undefined : {
       ...service.vless_reality,
       test_seed: [...service.vless_reality.test_seed],
       fallbacks: service.vless_reality.fallbacks.map((fallback) => ({ ...fallback })),
@@ -46,6 +46,7 @@ export function cloneServices(values: ProxyService[]): ProxyService[] {
       limit_fallback_upload: service.vless_reality.limit_fallback_upload == null ? undefined : { ...service.vless_reality.limit_fallback_upload },
       limit_fallback_download: service.vless_reality.limit_fallback_download == null ? undefined : { ...service.vless_reality.limit_fallback_download },
     },
+    shadowsocks: service.shadowsocks == null ? undefined : { ...service.shadowsocks },
   }))
 }
 
@@ -86,21 +87,23 @@ export function defaultDNSConfiguration(locale: Locale): DNSConfiguration {
   }
 }
 
-export function nextServiceDefaults(services: ProxyService[], serviceTypes: ServiceType[]): ProxyService {
-  const serviceType = serviceTypes[0]?.id ?? "vless-reality"
+export function nextServiceDefaults(services: ProxyService[], serviceTypes: ServiceType[], preferredType?: string): ProxyService {
+  const serviceType = preferredType ?? serviceTypes[0]?.id ?? "vless-reality"
+  const shadowsocks = serviceType === "shadowsocks"
+  const idPrefix = shadowsocks ? "shadowsocks" : "vless-reality"
   let suffix = services.length === 0 ? 1 : 2
-  let serviceID = services.length === 0 ? "vless-reality" : `vless-reality-${suffix}`
+  let serviceID = services.every((service) => service.service_id !== idPrefix) ? idPrefix : `${idPrefix}-${suffix}`
   while (services.some((service) => service.service_id === serviceID)) {
     suffix += 1
-    serviceID = `vless-reality-${suffix}`
+    serviceID = `${idPrefix}-${suffix}`
   }
-  let port = services.length === 0 ? 443 : 8443
+  let port = shadowsocks ? 8388 : services.length === 0 ? 443 : 8443
   while (services.some((service) => service.port === port) && port < 65535) port += 1
-  return {
+  const common: ProxyService = {
     type: serviceType,
     enabled: true,
     service_id: serviceID,
-    display_name: services.length === 0 ? "VLESS Reality" : `VLESS Reality ${services.length + 1}`,
+    display_name: shadowsocks ? "Shadowsocks" : services.length === 0 ? "VLESS Reality" : `VLESS Reality ${services.length + 1}`,
     listen: "0.0.0.0",
     port,
     public_host: "edge.example.com",
@@ -118,6 +121,20 @@ export function nextServiceDefaults(services: ProxyService[], serviceTypes: Serv
       ips_excluded: [],
       domains_excluded: [],
     },
+  }
+  if (shadowsocks) {
+    return {
+      ...common,
+      shadowsocks: {
+        method: "2022-blake3-aes-256-gcm",
+        network: "tcp,udp",
+        server_key: "",
+        iv_check: true,
+      },
+    }
+  }
+  return {
+    ...common,
     vless_reality: {
       decryption: "none",
       encryption: "none",
@@ -213,6 +230,75 @@ export function configurationForSave(value: EditableConfiguration): EditableConf
     routing: { rules: cloneRoutingRules(value.routing.rules) },
     dns: cloneDNSConfiguration(value.dns),
   }
+}
+
+export interface NamedChanges {
+  added: string[]
+  updated: string[]
+  removed: string[]
+  reordered: boolean
+}
+
+export interface ConfigurationChanges {
+  runtime: Array<"xray_version" | "api_port">
+  services: NamedChanges
+  routing: NamedChanges
+  dns: Array<"enabled" | "query_strategy">
+  dnsServers: NamedChanges
+}
+
+export function configurationsEqual(first: EditableConfiguration, second: EditableConfiguration): boolean {
+  return deepEqual(configurationForSave(first), configurationForSave(second))
+}
+
+export function configurationChanges(before: EditableConfiguration, after: EditableConfiguration): ConfigurationChanges {
+  const previous = configurationForSave(before)
+  const current = configurationForSave(after)
+  return {
+    runtime: [
+      ...(previous.xray_version === current.xray_version ? [] : ["xray_version" as const]),
+      ...(previous.api_port === current.api_port ? [] : ["api_port" as const]),
+    ],
+    services: namedChanges(previous.services, current.services, (value) => value.service_id, (value) => value.display_name),
+    routing: namedChanges(previous.routing.rules, current.routing.rules, (value) => value.rule_id, (value) => value.display_name),
+    dns: [
+      ...(previous.dns.enabled === current.dns.enabled ? [] : ["enabled" as const]),
+      ...(previous.dns.query_strategy === current.dns.query_strategy ? [] : ["query_strategy" as const]),
+    ],
+    dnsServers: namedChanges(previous.dns.servers, current.dns.servers, (value) => value.server_id, (value) => value.display_name),
+  }
+}
+
+function namedChanges<T>(before: T[], after: T[], id: (value: T) => string, name: (value: T) => string): NamedChanges {
+  const previous = new Map(before.map((value) => [id(value), value]))
+  const current = new Map(after.map((value) => [id(value), value]))
+  const sharedBefore = before.map(id).filter((value) => current.has(value))
+  const sharedAfter = after.map(id).filter((value) => previous.has(value))
+  return {
+    added: after.filter((value) => !previous.has(id(value))).map(name),
+    updated: after.filter((value) => previous.has(id(value)) && !deepEqual(previous.get(id(value)), value)).map(name),
+    removed: before.filter((value) => !current.has(id(value))).map(name),
+    reordered: !deepEqual(sharedBefore, sharedAfter),
+  }
+}
+
+function deepEqual(first: unknown, second: unknown): boolean {
+  if (Object.is(first, second)) return true
+  if (Array.isArray(first) || Array.isArray(second)) {
+    if (!Array.isArray(first) || !Array.isArray(second) || first.length !== second.length) return false
+    return first.every((value, index) => deepEqual(value, second[index]))
+  }
+  if (isPlainRecord(first) || isPlainRecord(second)) {
+    if (!isPlainRecord(first) || !isPlainRecord(second)) return false
+    const firstKeys = Object.keys(first).sort()
+    const secondKeys = Object.keys(second).sort()
+    return deepEqual(firstKeys, secondKeys) && firstKeys.every((key) => deepEqual(first[key], second[key]))
+  }
+  return false
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }
 
 export function lines(value: string): string[] {

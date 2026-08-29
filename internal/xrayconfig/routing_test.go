@@ -3,7 +3,7 @@ package xrayconfig
 import (
 	"testing"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 func TestCompileRoutingRulesPreservesManagedPriority(t *testing.T) {

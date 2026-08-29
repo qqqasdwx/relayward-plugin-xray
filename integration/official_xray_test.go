@@ -11,9 +11,9 @@ import (
 
 	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayrelease"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayruntime"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayrelease"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayruntime"
 )
 
 func TestOfficialXrayLifecycle(t *testing.T) {
@@ -23,6 +23,8 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	apiPort := freePort(t)
 	mainPort := freePort(t)
 	backupPort := freePort(t)
+	shadowsocks2022Port := freePort(t)
+	shadowsocksAEADPort := freePort(t)
 	configuration, err := config.NewConfiguration("26.3.27", apiPort, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
@@ -61,6 +63,20 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 				Decryption: "none", Encryption: "none",
 				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"},
 				Fingerprint: "chrome", SpiderX: "/",
+			},
+		},
+		{
+			Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-2022", DisplayName: "Shadowsocks 2022",
+			Listen: "127.0.0.1", Port: shadowsocks2022Port, PublicHost: "ss2022.example.com", PublicPort: shadowsocks2022Port,
+			Shadowsocks: &config.EditableShadowsocks{
+				Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
+			},
+		},
+		{
+			Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-aead", DisplayName: "Shadowsocks AEAD",
+			Listen: "127.0.0.1", Port: shadowsocksAEADPort, PublicHost: "ss.example.com", PublicPort: shadowsocksAEADPort,
+			Shadowsocks: &config.EditableShadowsocks{
+				Method: config.ShadowsocksMethodChaCha20, Network: config.ShadowsocksNetworkTCPUDP, IVCheck: true,
 			},
 		},
 	})
@@ -123,15 +139,18 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	}
 	waitForTCP(t, mainPort)
 	waitForTCP(t, backupPort)
+	waitForTCP(t, shadowsocks2022Port)
+	waitForTCP(t, shadowsocksAEADPort)
 	authorizationID := "10000000-0000-4000-8000-000000000001"
-	for revision, serviceID := range []string{"reality-main", "reality-backup"} {
+	for revision, serviceID := range []string{"reality-main", "reality-backup", "shadowsocks-2022", "shadowsocks-aead"} {
 		if err := runtime.ApplyServiceState(ctx, 1, uint64(revision+1), authorizationID, serviceID, true); err != nil {
 			t.Fatalf("ApplyServiceState(%q) error = %v", serviceID, err)
 		}
 	}
 	counters, err := runtime.CollectTraffic(ctx)
-	if err != nil || len(counters) != 2 || counters[0].AuthorizationID != authorizationID ||
-		counters[0].ServiceID != "reality-backup" || counters[1].ServiceID != "reality-main" {
+	if err != nil || len(counters) != 4 || counters[0].AuthorizationID != authorizationID ||
+		counters[0].ServiceID != "reality-backup" || counters[1].ServiceID != "reality-main" ||
+		counters[2].ServiceID != "shadowsocks-2022" || counters[3].ServiceID != "shadowsocks-aead" {
 		t.Fatalf("CollectTraffic() = %+v, %v", counters, err)
 	}
 	activity, err := runtime.CollectActivity(ctx, 0, 10)

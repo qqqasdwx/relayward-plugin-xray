@@ -117,14 +117,78 @@ func TestConfigurationRoundTripsCompleteInboundSettings(t *testing.T) {
 func TestSupportedServiceTypeCatalogIsDefensive(t *testing.T) {
 	t.Parallel()
 	definitions := SupportedServiceTypes()
-	if len(definitions) != 1 || definitions[0].ID != ServiceTypeVLESSReality ||
-		len(definitions[0].Capabilities.SubscriptionFormats) != 3 {
+	if len(definitions) != 2 || definitions[0].ID != ServiceTypeVLESSReality ||
+		definitions[1].ID != ServiceTypeShadowsocks || len(definitions[0].Capabilities.SubscriptionFormats) != 3 ||
+		len(definitions[1].Capabilities.SubscriptionFormats) != 3 {
 		t.Fatalf("SupportedServiceTypes() = %+v", definitions)
 	}
 	definitions[0].Capabilities.SubscriptionFormats[0] = "changed"
 	definition, exists := ServiceTypeDefinitionByID(ServiceTypeVLESSReality)
 	if !exists || definition.Capabilities.SubscriptionFormats[0] != "base64" {
 		t.Fatalf("ServiceTypeDefinitionByID() = %+v, %t", definition, exists)
+	}
+}
+
+func TestShadowsocksConfigurationGeneratesStableIndependentCredentials(t *testing.T) {
+	t.Parallel()
+	value, err := NewConfiguration("26.3.27", 10085, []EditableService{testEditableShadowsocks()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := value.Services[0]
+	if service.Shadowsocks == nil || service.VLESSReality != nil ||
+		!validShadowsocksKey(service.Shadowsocks.ServerKey, 32) {
+		t.Fatalf("Shadowsocks service = %+v", service)
+	}
+	first, err := DeriveShadowsocksPassword(value.CredentialSeed, "authorization-a", service.ServiceID, service.Shadowsocks.Method)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := DeriveShadowsocksPassword(value.CredentialSeed, "authorization-a", service.ServiceID, service.Shadowsocks.Method)
+	other, _ := DeriveShadowsocksPassword(value.CredentialSeed, "authorization-b", service.ServiceID, service.Shadowsocks.Method)
+	if first != second || first == other || !validShadowsocksKey(first, 32) ||
+		ShadowsocksClientPassword(*service.Shadowsocks, first) != service.Shadowsocks.ServerKey+":"+first {
+		t.Fatalf("derived Shadowsocks credentials = %q, %q, %q", first, second, other)
+	}
+
+	standard := testEditableShadowsocks()
+	standard.Shadowsocks.Method = ShadowsocksMethodChaCha20
+	standard.Shadowsocks.ServerKey = "ignored"
+	standardValue, err := NewConfiguration("26.3.27", 10085, []EditableService{standard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	standardService := standardValue.Services[0]
+	standardPassword, err := DeriveShadowsocksPassword(
+		standardValue.CredentialSeed, "authorization-a", standardService.ServiceID, standardService.Shadowsocks.Method,
+	)
+	if err != nil || standardService.Shadowsocks.ServerKey != "" || len(standardPassword) != 36 {
+		t.Fatalf("standard Shadowsocks service = %+v, password = %q, error = %v", standardService, standardPassword, err)
+	}
+}
+
+func TestShadowsocksValidationRejectsUnsupportedSettings(t *testing.T) {
+	t.Parallel()
+	valid, err := NewConfiguration("26.3.27", 10085, []EditableService{testEditableShadowsocks()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]func(*Configuration){
+		"method":       func(value *Configuration) { value.Services[0].Shadowsocks.Method = "rc4-md5" },
+		"network":      func(value *Configuration) { value.Services[0].Shadowsocks.Network = "icmp" },
+		"server key":   func(value *Configuration) { value.Services[0].Shadowsocks.ServerKey = "invalid" },
+		"typed config": func(value *Configuration) { value.Services[0].VLESSReality = &VLESSReality{} },
+	}
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			candidate := clone(valid)
+			mutate(&candidate)
+			if err := Validate(candidate); err == nil {
+				t.Fatal("Validate() unexpectedly succeeded")
+			}
+		})
 	}
 }
 
@@ -455,6 +519,16 @@ func testEditableServices() []EditableService {
 			VLESSReality: &EditableVLESSReality{
 				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
 			},
+		},
+	}
+}
+
+func testEditableShadowsocks() EditableService {
+	return EditableService{
+		Type: ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
+		Listen: "0.0.0.0", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+		Shadowsocks: &EditableShadowsocks{
+			Method: ShadowsocksMethod2022AES256, Network: ShadowsocksNetworkTCPUDP, IVCheck: true,
 		},
 	}
 }

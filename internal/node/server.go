@@ -11,9 +11,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
-	"github.com/Relayward/relayward-plugin-xray/internal/pluginmeta"
-	"github.com/Relayward/relayward-plugin-xray/internal/xrayruntime"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/pluginmeta"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayruntime"
 )
 
 type Runtime interface {

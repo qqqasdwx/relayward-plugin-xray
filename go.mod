@@ -1,4 +1,4 @@
-module github.com/Relayward/relayward-plugin-xray
+module github.com/qqqasdwx/relayward-plugin-xray
 
 go 1.26.0
 

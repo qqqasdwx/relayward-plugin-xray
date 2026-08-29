@@ -3,13 +3,14 @@ package subscription
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
 
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
 func TestRenderMultipleServicesInAllFormatsWithStableCredentials(t *testing.T) {
@@ -60,6 +61,70 @@ func TestRenderRejectsUnknownService(t *testing.T) {
 	request.Services[0].ServiceId = "unknown"
 	if _, err := Render(configuration, request); err == nil {
 		t.Fatal("Render() accepted an unknown service")
+	}
+}
+
+func TestRenderShadowsocks2022AndStandardSubscriptions(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{config.ShadowsocksMethod2022AES256, config.ShadowsocksMethodChaCha20} {
+		method := method
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+				Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
+				Listen: "0.0.0.0", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+				Shadowsocks: &config.EditableShadowsocks{Method: method, Network: config.ShadowsocksNetworkTCPUDP},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := &centerpluginv1.RenderSubscriptionRequest{
+				AuthorizationId: "10000000-0000-4000-8000-000000000001",
+				NodeId:          "20000000-0000-4000-8000-000000000002",
+				Services: []*centerpluginv1.SubscriptionServiceBinding{{
+					ServiceId: "shadowsocks-main", DisplayName: "Edge SS",
+				}},
+			}
+			rendered, err := Render(configuration, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := configuration.Services[0]
+			userPassword, _ := config.DeriveShadowsocksPassword(
+				configuration.CredentialSeed, request.AuthorizationId, service.ServiceID, method,
+			)
+			password := config.ShadowsocksClientPassword(*service.Shadowsocks, userPassword)
+			contribution := rendered.Services[0]
+			if len(contribution.Uris) != 1 || len(contribution.MihomoProxiesJson) != 1 || len(contribution.SingBoxOutboundsJson) != 1 {
+				t.Fatalf("Shadowsocks contribution = %+v", contribution)
+			}
+			var mihomo map[string]any
+			var singBox map[string]any
+			if err := json.Unmarshal(contribution.MihomoProxiesJson[0], &mihomo); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(contribution.SingBoxOutboundsJson[0], &singBox); err != nil {
+				t.Fatal(err)
+			}
+			if mihomo["cipher"] != method || mihomo["password"] != password || mihomo["udp"] != true ||
+				singBox["method"] != method || singBox["password"] != password {
+				t.Fatalf("Shadowsocks fragments = %s, %s", contribution.MihomoProxiesJson[0], contribution.SingBoxOutboundsJson[0])
+			}
+			if config.IsShadowsocks2022(method) {
+				if !strings.Contains(contribution.Uris[0], method+":"+url.QueryEscape(service.Shadowsocks.ServerKey)+":"+url.QueryEscape(userPassword)) {
+					t.Fatalf("Shadowsocks 2022 URI = %q", contribution.Uris[0])
+				}
+			} else {
+				parsed, err := url.Parse(contribution.Uris[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				decoded, err := base64.RawURLEncoding.DecodeString(parsed.User.Username())
+				if err != nil || string(decoded) != method+":"+userPassword {
+					t.Fatalf("Shadowsocks URI userinfo = %q, %v", decoded, err)
+				}
+			}
+		})
 	}
 }
 

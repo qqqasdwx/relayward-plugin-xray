@@ -1,16 +1,18 @@
-# Relayward Xray Plugin
+# Xray Plugin for Relayward
 
-[![CI](https://github.com/Relayward/relayward-plugin-xray/actions/workflows/ci.yml/badge.svg)](https://github.com/Relayward/relayward-plugin-xray/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Relayward/relayward-plugin-xray)](https://github.com/Relayward/relayward-plugin-xray/releases)
-[![License](https://img.shields.io/github/license/Relayward/relayward-plugin-xray)](LICENSE)
+[![CI](https://github.com/qqqasdwx/relayward-plugin-xray/actions/workflows/ci.yml/badge.svg)](https://github.com/qqqasdwx/relayward-plugin-xray/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/qqqasdwx/relayward-plugin-xray)](https://github.com/qqqasdwx/relayward-plugin-xray/releases)
+[![License](https://img.shields.io/github/license/qqqasdwx/relayward-plugin-xray)](LICENSE)
 
-`relayward-plugin-xray` is the official Xray runtime plugin for Relayward. The center artifact participates in Relayward plugin lifecycle management, while the node artifact installs and supervises an official Xray release on each node.
+`relayward-plugin-xray` is an independently maintained Xray runtime plugin for Relayward, tailored to the maintainer's real deployments. The center artifact participates in Relayward plugin lifecycle management, while the node artifact installs and supervises an official Xray release on each node.
+
+The plugin supports only the combinations documented below. It does not aim to expose every Xray protocol, transport, field, platform, or legacy configuration.
 
 ## Current Scope
 
 - Linux AMD64 center and node artifacts
 - responsive Simplified Chinese and English administration page
-- multiple independent VLESS + REALITY + RAW Vision inbounds per node
+- multiple independent VLESS + REALITY + RAW Vision and Shadowsocks inbounds per node
 - official stable `XTLS/Xray-core` release resolution
 - bounded download with exact size and SHA-256 verification
 - private, immutable Xray version installations
@@ -22,10 +24,10 @@
 - per-authorization dynamic source-IP blocking through Xray's local Routing API
 - ordered static domain-suffix, destination-CIDR, and sniffed-protocol routing to direct or blocked outbounds
 - ordered system, UDP, TCP, and DNS-over-HTTPS resolvers with global IPv4/IPv6 query strategy and per-server domain selection
-- VLESS URI, Mihomo, and sing-box subscription contributions
+- VLESS and Shadowsocks URI, Mihomo, and sing-box subscription contributions
 - Relayward generation, digest, and health reporting
 
-The current runtime supports up to 64 independently identified VLESS + REALITY + RAW Vision inbounds, 128 static routing rules, and 16 ordered DNS servers per node. Additional outbound types, protocols, transports, certificates, and full access-log collection are not implemented.
+The current runtime supports up to 64 independently identified VLESS + REALITY + RAW Vision or Shadowsocks inbounds, 128 static routing rules, and 16 ordered DNS servers per node. Shadowsocks supports the `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, and `xchacha20-ietf-poly1305` methods over TCP, UDP, or both. Additional outbound types, protocols, transports, certificates, and full access-log collection are not implemented.
 
 Recent activity is an online-presence signal rather than a full request log. While an authorization remains online, the plugin emits at most one accepted activity event per authorization, service, and source IP every 30 seconds. The stream ID, sequence cursor, unacknowledged events, and refresh index are stored atomically in a private state file so Agent retries and plugin restarts do not create sequence gaps. Dynamic blocks match authorization email, inbound service, and one source IP together, avoiding collateral blocking of another authorization behind the same NAT. Runtime routing replacement always rebuilds the complete managed rule set in API, dynamic-block, then static-rule order, so a static direct rule cannot bypass a Relayward soft IP block.
 
@@ -36,7 +38,7 @@ This plugin requires a running [Relayward](https://github.com/Relayward/relaywar
 In the Relayward administration interface, open **Plugins**, select **Install plugin**, and enter:
 
 ```text
-GitHub repository: https://github.com/Relayward/relayward-plugin-xray
+GitHub repository: https://github.com/qqqasdwx/relayward-plugin-xray
 Version:           an existing release number without the leading v, for example 0.4.1
 GitHub token:      leave empty for this public repository
 ```
@@ -51,13 +53,13 @@ After installation, the plugin must report `active` and `healthy` before a node 
 ## First Inbound
 
 1. Open **Nodes**, view an enrolled, online node, and select its **Xray** tab.
-2. Select a stable official Xray version and add a VLESS + RAW + REALITY inbound.
-3. Review the listener, public host and port, REALITY target and server names. Configure routing and DNS only when required.
+2. Select a stable official Xray version and add a VLESS + RAW + REALITY or Shadowsocks inbound.
+3. Review the listener, public host and port, and protocol-specific settings. Configure routing and DNS only when required.
 4. Save the node configuration. The Agent installs the node artifact, the plugin downloads and verifies the official Xray release, starts Xray, and publishes the inbound through Relayward's internal service catalog.
 5. Wait until **Plugins > Node instances** reports the desired generation as applied and the runtime as running.
 6. Open the configured TCP port in the node firewall, provider firewall, and any NAT port mapping. Relayward and this plugin do not modify host firewall rules.
 7. In Relayward, create a user and a node authorization, then use **Manage services** to bind the authorization to the published Xray service.
-8. Open the authorization's subscription link and select the required VLESS URI, Mihomo, or sing-box output.
+8. Open the authorization's subscription link and select the required URI, Mihomo, or sing-box output.
 
 Verify that the subscription contains the configured public host and port, then connect a real client through the inbound. Relayward should report the authorization as active, update traffic counters, and show recent accepted activity after traffic is generated.
 
@@ -115,6 +117,30 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
         "fingerprint": "chrome",
         "spider_x": "/"
       }
+    },
+    {
+      "type": "shadowsocks",
+      "enabled": true,
+      "service_id": "shadowsocks-main",
+      "display_name": "Shadowsocks Main",
+      "listen": "0.0.0.0",
+      "port": 8388,
+      "public_host": "edge.example.com",
+      "public_port": 8388,
+      "sniffing": {
+        "enabled": false,
+        "dest_override": [],
+        "metadata_only": false,
+        "route_only": false,
+        "ips_excluded": [],
+        "domains_excluded": []
+      },
+      "shadowsocks": {
+        "method": "2022-blake3-aes-256-gcm",
+        "network": "tcp,udp",
+        "server_key": "padded-base64-encoded-32-byte-secret",
+        "iv_check": true
+      }
     }
   ],
   "routing": {
@@ -157,9 +183,11 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
 }
 ```
 
-The administration UI consistently calls these entries inbounds. The persisted `services[]` array and `service_id` fields are Relayward's internal cross-plugin contract. Each entry keeps the inbound identity and public endpoint at that contract level, while protocol-specific fields are stored in `vless_reality`.
+The administration UI consistently calls these entries inbounds. The persisted `services[]` array and `service_id` fields are Relayward's internal cross-plugin contract. Each entry keeps the inbound identity and public endpoint at that contract level, while protocol-specific fields are stored in either `vless_reality` or `shadowsocks`. The inbound protocol cannot be changed after the entry is created.
 
-Each internal service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Entries are stored in service-ID order. The administration page generates a node credential seed and independent REALITY secrets for each new inbound. Editing an inbound preserves its secrets by ID; deleting it removes them.
+Each internal service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Entries are stored in service-ID order. The administration page generates a node credential seed, independent REALITY secrets for each new VLESS inbound, and a method-sized server key for each new Shadowsocks 2022 inbound. Editing an inbound preserves its secrets by ID; deleting it removes them.
+
+Every Relayward authorization receives an independent, deterministic Shadowsocks password for each Shadowsocks inbound. Shadowsocks 2022 subscriptions combine the inbound server key and the authorization-specific user key as required by the protocol; traditional AEAD subscriptions contain only the authorization-specific password. The private bootstrap account used to keep a Shadowsocks 2022 inbound in Xray's multi-user mode is derived internally and is never exposed through subscriptions.
 
 Static routing rules retain their configured order and have stable rule IDs. Values within one match category are alternatives, while every populated category on a rule must match. A domain value matches that domain and its subdomains; raw Xray expressions and regular expressions are not accepted. IP matches must use canonical IPv4 or IPv6 CIDR notation. Protocol matches are limited to `http`, `tls`, `quic`, and `bittorrent`; Xray reports HTTP/1 traffic as `http1`, which is covered by its `http` protocol-prefix matcher. Rules may send matching traffic only to the built-in `direct` or `blocked` outbound. Domain or protocol rules enable route-only HTTP, TLS, and QUIC sniffing on enabled inbounds, preserving the original connection target while making the sniffed destination available to routing.
 
@@ -171,7 +199,7 @@ Unknown fields, prerelease Xray versions, duplicate inbound, rule, or DNS server
 
 The target is a starting value, not a universal deployment choice. It must be reachable from the node, support TLS 1.3, and complete a real REALITY handshake with the selected Xray release; a successful TCP or ordinary TLS probe alone is insufficient.
 
-Each authorization receives a deterministic UUID derived as `HMAC-SHA256(credential_seed, authorization_id + NUL + service_id)`. The UUID is stable for one node configuration, differs between authorizations, and cannot be derived from public Relayward identifiers without the node secret. Subscription rendering repeats the derivation without creating or mutating state.
+Each VLESS authorization receives a deterministic UUID derived as `HMAC-SHA256(credential_seed, authorization_id + NUL + service_id)`. Traditional Shadowsocks AEAD uses the same stable value as its password. Shadowsocks 2022 derives a method-sized base64 user key from the same node secret and identifiers with a protocol-specific domain separator. These credentials are stable for one node configuration, differ between authorizations, and cannot be derived from public Relayward identifiers without the node secret. Subscription rendering repeats the derivation without creating or mutating state.
 
 ## Release Trust
 
@@ -201,4 +229,4 @@ Release builds contain `relayward-plugin.json`, separate center and node Linux A
 
 ## License
 
-Relayward Xray Plugin is licensed under GPL-3.0. Xray-core is an independent project distributed under MPL-2.0 and is downloaded from its official releases.
+This plugin is licensed under GPL-3.0. Xray-core is an independent project distributed under MPL-2.0 and is downloaded from its official releases.

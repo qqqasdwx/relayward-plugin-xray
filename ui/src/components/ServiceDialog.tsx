@@ -3,6 +3,7 @@ import { CheckCircle2, CircleHelp, CircleMinus, Plus, Server, Trash2, XCircle } 
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -33,11 +34,21 @@ import type {
   RealityLimitFallback,
   SniffingDestination,
   SocketSettings,
+  ServiceType,
+  ShadowsocksMethod,
   TCPHeader,
   VLESSFallback,
 } from "@/types"
 
 const fingerprints = ["chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized", "randomizednoalpn", "unsafe"]
+const shadowsocksMethods: ShadowsocksMethod[] = [
+  "2022-blake3-aes-256-gcm",
+  "2022-blake3-aes-128-gcm",
+  "aes-256-gcm",
+  "aes-128-gcm",
+  "chacha20-ietf-poly1305",
+  "xchacha20-ietf-poly1305",
+]
 const sniffingDestinations: SniffingDestination[] = ["http", "tls", "quic", "fakedns"]
 type FieldScope = "server" | CapabilityID
 
@@ -45,6 +56,8 @@ interface ServiceDialogProps {
   initial: ProxyService
   editingID: string | null
   existingIDs: string[]
+  serviceTypes: ServiceType[]
+  createService: (type: string) => ProxyService
   t: Translator
   onClose: () => void
   onApply: (service: ProxyService) => void
@@ -109,7 +122,7 @@ function emptyCustomSockopt(): CustomSockopt {
   return { system: "linux", network: "", level: "6", opt: "", type: "int", value: "" }
 }
 
-export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onApply }: ServiceDialogProps) {
+export function ServiceDialog({ initial, editingID, existingIDs, serviceTypes, createService, t, onClose, onApply }: ServiceDialogProps) {
   const [value, setValue] = useState<ProxyService>(() => structuredClone(initial))
   const [duplicate, setDuplicate] = useState(false)
 
@@ -131,7 +144,16 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
           value: option.value.trim(),
         })),
       },
-      vless_reality: {
+    }
+    if (value.type === "shadowsocks" && value.shadowsocks != null) {
+      normalized.vless_reality = undefined
+      normalized.shadowsocks = {
+        ...value.shadowsocks,
+        server_key: value.shadowsocks.server_key.trim(),
+      }
+    } else if (value.vless_reality != null) {
+      normalized.shadowsocks = undefined
+      normalized.vless_reality = {
         ...value.vless_reality,
         decryption: value.vless_reality.decryption.trim(),
         encryption: value.vless_reality.encryption.trim(),
@@ -153,7 +175,7 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
         mldsa65_verify: value.vless_reality.mldsa65_verify.trim(),
         master_key_log: value.vless_reality.master_key_log.trim(),
         spider_x: value.vless_reality.spider_x.trim(),
-      },
+      }
     }
     const duplicateID = existingIDs.some((id) => id === normalized.service_id && id !== editingID)
     setDuplicate(duplicateID)
@@ -161,67 +183,182 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
     onApply(normalized)
   }
 
-  const reality = value.vless_reality
+  const reality = value.vless_reality!
   const sockopt = value.sockopt
   const compatibility = compatibilityFor(value)
 
+  const typeField = (
+    <FieldRow label={t("Inbound protocol")} help={t("Select the protocol accepted by this inbound. The protocol cannot be changed after the inbound is added.")} scope="server" t={t}>
+      <Select disabled={editingID != null} value={value.type} onValueChange={(type) => setValue(createService(type))}>
+        <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+        <SelectContent>{serviceTypes.map((type) => <SelectItem key={type.id} value={type.id}>{type.display_name}</SelectItem>)}</SelectContent>
+      </Select>
+    </FieldRow>
+  )
+
+  if (value.type === "shadowsocks" && value.shadowsocks != null) {
+    const shadowsocks = value.shadowsocks
+    const methodScope: FieldScope = shadowsocks.method.startsWith("2022-") ? "shadowsocks-2022" : "shadowsocks"
+    return (
+      <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+        <DialogContent className="h-[calc(100vh-2rem)] overflow-hidden sm:max-w-[calc(100vw-3rem)] xl:max-w-7xl" closeLabel={t("Close")}>
+          <form className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-6 overflow-hidden" onSubmit={submit}>
+            <DialogHeader>
+              <DialogTitle>{t(editingID == null ? "Add inbound" : "Edit inbound")}</DialogTitle>
+              <DialogDescription>Shadowsocks · TCP/UDP</DialogDescription>
+            </DialogHeader>
+
+            <div className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] items-stretch gap-6 overflow-hidden lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-1">
+              <Tabs defaultValue="basic" className="min-h-0 min-w-0 gap-5 overflow-hidden [&_[data-slot=tabs-content]]:min-h-0 [&_[data-slot=tabs-content]]:overflow-y-auto [&_[data-slot=tabs-content]]:pr-3 [&_[data-slot=tabs-content]]:[scrollbar-gutter:stable]">
+                <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:grid-cols-4">
+                  <TabsTrigger value="basic" className="h-9">{t("Basic")}</TabsTrigger>
+                  <TabsTrigger value="protocol" className="h-9">{t("Protocol")}</TabsTrigger>
+                  <TabsTrigger value="transport" className="h-9">{t("Transport")}</TabsTrigger>
+                  <TabsTrigger value="sniffing" className="h-9">{t("Sniffing")}</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="basic" className="grid gap-5">
+                  <FormCard>
+                    <SwitchField label={t("Enable")} help={t("Controls whether this inbound is included in the Xray configuration.")} checked={value.enabled} scope="server" t={t} onChange={(enabled) => setValue({ ...value, enabled })} />
+                    {typeField}
+                    <TextField label={t("Remark")} help={t("A readable name used to identify this inbound in Relayward and subscriptions.")} value={value.display_name} maxLength={100} required scope="server" t={t} onChange={(display_name) => setValue({ ...value, display_name })} />
+                    <FieldRow label={t("Inbound tag")} help={t("The unique Xray inbound tag. It is also used by routing, authorization, and telemetry.")} scope="server" t={t}>
+                      <div className="grid gap-2">
+                        <Input id="inbound-tag" value={value.service_id} disabled={editingID != null} pattern="[a-z0-9][a-z0-9._\-]{0,63}" maxLength={64} required aria-invalid={duplicate} onChange={(event) => { setValue({ ...value, service_id: event.target.value }); setDuplicate(false) }} />
+                        {duplicate ? <p className="text-sm text-destructive">{t("Inbound tag already exists.")}</p> : null}
+                      </div>
+                    </FieldRow>
+                    <ReadOnlyField label={t("Protocol")} help={t("The client protocol accepted by this inbound.")} value="Shadowsocks" scope="shadowsocks" t={t} />
+                    <TextField label={t("Address")} help={t("The local address Xray listens on. Use 0.0.0.0 to listen on all IPv4 interfaces.")} value={value.listen} required scope="server" t={t} onChange={(listen) => setValue({ ...value, listen })} />
+                    <NumberField label={t("Port")} help={t("The local port Xray listens on for this inbound.")} value={value.port} min={1} max={65535} required scope="server" t={t} onChange={(port) => setValue({ ...value, port })} />
+                    <TextField label={t("Share address")} help={t("The public domain or IP written into subscription links. It may differ from the listen address behind NAT or a relay.")} value={value.public_host} required scope="shadowsocks" t={t} onChange={(public_host) => setValue({ ...value, public_host })} />
+                    <NumberField label={t("Share port")} help={t("The public port written into subscription links. It may differ from the listen port after port forwarding.")} value={value.public_port} min={1} max={65535} required scope="shadowsocks" t={t} onChange={(public_port) => setValue({ ...value, public_port })} />
+                  </FormCard>
+                </TabsContent>
+
+                <TabsContent value="protocol" className="grid gap-5">
+                  <FormCard>
+                    <FieldRow label={t("Encryption method")} help={t("The Shadowsocks cipher used by the server and generated client subscriptions.")} scope={methodScope} t={t}>
+                      <Select value={shadowsocks.method} onValueChange={(method: ShadowsocksMethod) => setValue({ ...value, shadowsocks: { ...shadowsocks, method, server_key: "" } })}>
+                        <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                        <SelectContent>{shadowsocksMethods.map((method) => <SelectItem key={method} value={method}>{method}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </FieldRow>
+                    {shadowsocks.method.startsWith("2022-") ? (
+                      <TextAreaField label={t("Server key")} help={t("The Shadowsocks 2022 server key. Leave empty to generate a method-sized key when saving.")} value={shadowsocks.server_key} placeholder={t("Leave empty to generate automatically")} scope="server" t={t} onChange={(server_key) => setValue({ ...value, shadowsocks: { ...shadowsocks, server_key } })} />
+                    ) : (
+                      <SwitchField label="IV check" help={t("Rejects repeated initialization vectors for traditional AEAD methods to reduce replay risk.")} checked={shadowsocks.iv_check} scope="server" t={t} onChange={(iv_check) => setValue({ ...value, shadowsocks: { ...shadowsocks, iv_check } })} />
+                    )}
+                  </FormCard>
+                </TabsContent>
+
+                <TabsContent value="transport" className="grid gap-5">
+                  <FormCard>
+                    <FieldRow label={t("Network")} help={t("Select whether this Shadowsocks inbound accepts TCP, UDP, or both.")} scope="server" t={t}>
+                      <Select value={shadowsocks.network} onValueChange={(network: "tcp" | "udp" | "tcp,udp") => setValue({ ...value, shadowsocks: { ...shadowsocks, network } })}>
+                        <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="tcp,udp">TCP + UDP</SelectItem><SelectItem value="tcp">TCP</SelectItem><SelectItem value="udp">UDP</SelectItem></SelectContent>
+                      </Select>
+                    </FieldRow>
+                  </FormCard>
+                </TabsContent>
+
+                <TabsContent value="sniffing" className="grid gap-5">
+                  <FormCard>
+                    <SwitchField label={t("Enable")} help={t("Lets Xray inspect initial traffic metadata to identify the destination protocol or domain for routing.")} checked={value.sniffing.enabled} scope="server" t={t} onChange={(enabled) => setValue({ ...value, sniffing: { ...value.sniffing, enabled } })} />
+                    {value.sniffing.enabled ? (
+                      <>
+                        <FieldRow label={t("Destination override")} help={t("Protocols whose sniffed destination may replace the original destination for routing or connection handling.")} scope="server" t={t}>
+                          <div className="grid gap-3">
+                            {sniffingDestinations.map((destination) => (
+                              <label key={destination} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
+                                <Checkbox checked={value.sniffing.dest_override.includes(destination)} onCheckedChange={(checked) => setValue({ ...value, sniffing: { ...value.sniffing, dest_override: checked ? [...value.sniffing.dest_override, destination] : value.sniffing.dest_override.filter((item) => item !== destination) } })} />
+                                {destination}
+                              </label>
+                            ))}
+                          </div>
+                        </FieldRow>
+                        <SwitchField label={t("Metadata only")} help={t("Uses connection metadata without inspecting application payload. Protocol and domain detection may be limited.")} checked={value.sniffing.metadata_only} scope="server" t={t} onChange={(metadata_only) => setValue({ ...value, sniffing: { ...value.sniffing, metadata_only } })} />
+                        <SwitchField label={t("Route only")} help={t("Uses the sniffed destination only for routing while preserving the original destination for the outbound connection.")} checked={value.sniffing.route_only} scope="server" t={t} onChange={(route_only) => setValue({ ...value, sniffing: { ...value.sniffing, route_only } })} />
+                        <TextAreaField label={t("Excluded IPs")} help={t("IP addresses, CIDRs, or geoip expressions that sniffing must not override, one per line.")} value={value.sniffing.ips_excluded.join("\n")} placeholder="geoip:private" scope="server" t={t} onChange={(raw) => setValue({ ...value, sniffing: { ...value.sniffing, ips_excluded: lines(raw) } })} />
+                        <TextAreaField label={t("Excluded domains")} help={t("Domain expressions that sniffing must not override, one per line.")} value={value.sniffing.domains_excluded.join("\n")} placeholder="domain:example.com" scope="server" t={t} onChange={(raw) => setValue({ ...value, sniffing: { ...value.sniffing, domains_excluded: lines(raw) } })} />
+                      </>
+                    ) : null}
+                  </FormCard>
+                </TabsContent>
+              </Tabs>
+
+              <CompatibilitySummary compatibility={compatibility} t={t} />
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={onClose}>{t("Cancel")}</Button>
+              <Button type="submit">{t(editingID == null ? "Add inbound" : "Apply inbound")}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-5xl" closeLabel={t("Close")}>
-        <form className="grid gap-6" onSubmit={submit}>
+      <DialogContent className="h-[calc(100vh-2rem)] overflow-hidden sm:max-w-[calc(100vw-3rem)] xl:max-w-7xl" closeLabel={t("Close")}>
+        <form className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-6 overflow-hidden" onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>{t(editingID == null ? "Add inbound" : "Edit inbound")}</DialogTitle>
             <DialogDescription>VLESS · RAW · REALITY</DialogDescription>
           </DialogHeader>
 
-          <CompatibilitySummary compatibility={compatibility} t={t} />
-
-          <Tabs defaultValue="basic" className="min-w-0 gap-5">
-            <div className="overflow-x-auto">
-              <TabsList className="grid w-full min-w-[38rem] grid-cols-5">
-                <TabsTrigger value="basic">{t("Basic")}</TabsTrigger>
-                <TabsTrigger value="protocol">{t("Protocol")}</TabsTrigger>
-                <TabsTrigger value="transport">{t("Transport")}</TabsTrigger>
-                <TabsTrigger value="security">{t("Security")}</TabsTrigger>
-                <TabsTrigger value="sniffing">{t("Sniffing")}</TabsTrigger>
+          <div className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] items-stretch gap-6 overflow-hidden lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-1">
+            <Tabs defaultValue="basic" className="min-h-0 min-w-0 gap-5 overflow-hidden [&_[data-slot=tabs-content]]:min-h-0 [&_[data-slot=tabs-content]]:overflow-y-auto [&_[data-slot=tabs-content]]:pr-3 [&_[data-slot=tabs-content]]:[scrollbar-gutter:stable]">
+              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:grid-cols-5">
+                <TabsTrigger value="basic" className="h-9">{t("Basic")}</TabsTrigger>
+                <TabsTrigger value="protocol" className="h-9">{t("Protocol")}</TabsTrigger>
+                <TabsTrigger value="transport" className="h-9">{t("Transport")}</TabsTrigger>
+                <TabsTrigger value="security" className="h-9">{t("Security")}</TabsTrigger>
+                <TabsTrigger value="sniffing" className="col-span-2 h-9 sm:col-span-1">{t("Sniffing")}</TabsTrigger>
               </TabsList>
-            </div>
 
             <TabsContent value="basic" className="grid gap-5">
-              <SwitchField label={t("Enable")} help={t("Controls whether this inbound is included in the Xray configuration.")} checked={value.enabled} scope="server" t={t} onChange={(enabled) => setValue({ ...value, enabled })} />
-              <div className="grid gap-4">
-                <TextField label={t("Remark")} help={t("A readable name used to identify this inbound in Relayward and subscriptions.")} value={value.display_name} maxLength={100} required scope="server" t={t} onChange={(display_name) => setValue({ ...value, display_name })} />
-                <div className="grid gap-2">
-                  <FieldLabel label={t("Inbound tag")} help={t("The unique Xray inbound tag. It is also used by routing, authorization, and telemetry.")} scope="server" t={t} />
-                  <Input
-                    id="inbound-tag"
-                    value={value.service_id}
-                    disabled={editingID != null}
-                    pattern="[a-z0-9][a-z0-9._\-]{0,63}"
-                    maxLength={64}
-                    required
-                    aria-invalid={duplicate}
-                    onChange={(event) => { setValue({ ...value, service_id: event.target.value }); setDuplicate(false) }}
-                  />
-                  {duplicate ? <p className="text-sm text-destructive">{t("Inbound tag already exists.")}</p> : null}
+              <FormCard>
+                <SwitchField label={t("Enable")} help={t("Controls whether this inbound is included in the Xray configuration.")} checked={value.enabled} scope="server" t={t} onChange={(enabled) => setValue({ ...value, enabled })} />
+                {typeField}
+                <div className="grid gap-4">
+                  <TextField label={t("Remark")} help={t("A readable name used to identify this inbound in Relayward and subscriptions.")} value={value.display_name} maxLength={100} required scope="server" t={t} onChange={(display_name) => setValue({ ...value, display_name })} />
+                  <FieldRow label={t("Inbound tag")} help={t("The unique Xray inbound tag. It is also used by routing, authorization, and telemetry.")} scope="server" t={t}>
+                    <div className="grid gap-2">
+                      <Input
+                        id="inbound-tag"
+                        value={value.service_id}
+                        disabled={editingID != null}
+                        pattern="[a-z0-9][a-z0-9._\-]{0,63}"
+                        maxLength={64}
+                        required
+                        aria-invalid={duplicate}
+                        onChange={(event) => { setValue({ ...value, service_id: event.target.value }); setDuplicate(false) }}
+                      />
+                      {duplicate ? <p className="text-sm text-destructive">{t("Inbound tag already exists.")}</p> : null}
+                    </div>
+                  </FieldRow>
+                  <ReadOnlyField label={t("Protocol")} help={t("The client protocol accepted by this inbound.")} value="VLESS" scope="vless" t={t} />
+                  <TextField label={t("Address")} help={t("The local address Xray listens on. Use 0.0.0.0 to listen on all IPv4 interfaces.")} value={value.listen} required scope="server" t={t} onChange={(listen) => setValue({ ...value, listen })} />
+                  <NumberField label={t("Port")} help={t("The local TCP port Xray listens on for this inbound.")} value={value.port} min={1} max={65535} required scope="server" t={t} onChange={(port) => setValue({ ...value, port })} />
+                  <TextField label={t("Share address")} help={t("The public domain or IP written into subscription links. It may differ from the listen address behind NAT or a relay.")} value={value.public_host} required scope="vless" t={t} onChange={(public_host) => setValue({ ...value, public_host })} />
+                  <NumberField label={t("Share port")} help={t("The public port written into subscription links. It may differ from the listen port after port forwarding.")} value={value.public_port} min={1} max={65535} required scope="vless" t={t} onChange={(public_port) => setValue({ ...value, public_port })} />
                 </div>
-                <ReadOnlyField label={t("Protocol")} help={t("The client protocol accepted by this inbound. This version currently supports VLESS.")} value="VLESS" scope="vless" t={t} />
-                <TextField label={t("Address")} help={t("The local address Xray listens on. Use 0.0.0.0 to listen on all IPv4 interfaces.")} value={value.listen} required scope="server" t={t} onChange={(listen) => setValue({ ...value, listen })} />
-                <NumberField label={t("Port")} help={t("The local TCP port Xray listens on for this inbound.")} value={value.port} min={1} max={65535} required scope="server" t={t} onChange={(port) => setValue({ ...value, port })} />
-                <TextField label={t("Share address")} help={t("The public domain or IP written into subscription links. It may differ from the listen address behind NAT or a relay.")} value={value.public_host} required scope="vless" t={t} onChange={(public_host) => setValue({ ...value, public_host })} />
-                <NumberField label={t("Share port")} help={t("The public port written into subscription links. It may differ from the listen port after port forwarding.")} value={value.public_port} min={1} max={65535} required scope="vless" t={t} onChange={(public_port) => setValue({ ...value, public_port })} />
-              </div>
+              </FormCard>
             </TabsContent>
 
             <TabsContent value="protocol" className="grid gap-5">
-              <div className="grid gap-4">
-                <div className="grid gap-2">
-                  <FieldLabel label={t("Flow")} help={t("Select xtls-rprx-vision to enable XTLS Vision for authorization clients, or None to leave flow unset.")} scope="vision" t={t} />
+              <FormCard>
+                <div className="grid gap-4">
+                <FieldRow label={t("Flow")} help={t("Select xtls-rprx-vision to enable XTLS Vision for authorization clients, or None to leave flow unset.")} scope="vision" t={t}>
                   <Select value={reality.flow === "" ? "none" : reality.flow} onValueChange={(flow) => setValue({ ...value, vless_reality: { ...reality, flow: flow === "none" ? "" : flow } })}>
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent><SelectItem value="none">None</SelectItem><SelectItem value="xtls-rprx-vision">xtls-rprx-vision</SelectItem></SelectContent>
                   </Select>
-                </div>
+                </FieldRow>
                 <TextField label="Vision testseed" help={t("Optional four positive integers used by XTLS Vision padding tests. Leave empty to use Xray defaults.")} value={reality.test_seed.join(", ")} placeholder="900, 500, 900, 256" scope="server" t={t} onChange={(raw) => setValue({ ...value, vless_reality: { ...reality, test_seed: numberList(raw) } })} />
               </div>
 
@@ -243,11 +380,13 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
                     </div>
                   </div>
                 ))}
-              </ListSection>
+                </ListSection>
+              </FormCard>
             </TabsContent>
 
             <TabsContent value="transport" className="grid gap-5">
-              <div className="grid gap-4">
+              <FormCard>
+                <div className="grid gap-4">
                 <ReadOnlyField label={t("Transport")} help={t("The transport used by this inbound. RAW is Xray's direct TCP byte stream.")} value="RAW" scope="vless" t={t} />
                 <SwitchField label="Proxy Protocol" help={t("Reads the original source address from a PROXY protocol header sent by a trusted upstream relay. Do not enable it for direct client connections.")} checked={value.tcp.accept_proxy_protocol} scope="server" t={t} onChange={(accept_proxy_protocol) => setValue({ ...value, tcp: { ...value.tcp, accept_proxy_protocol } })} />
               </div>
@@ -278,20 +417,18 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
                       <NumberField label="TCP Max Seg" help={t("TCP maximum segment size in bytes. 0 leaves the operating-system default unchanged.")} value={sockopt.tcp_max_seg} min={0} t={t} onChange={(tcp_max_seg) => updateSockopt(value, setValue, { ...sockopt, tcp_max_seg })} />
                       <NumberField label="TCP User Timeout" help={t("Maximum milliseconds transmitted data may remain unacknowledged. 0 uses the operating-system default.")} value={sockopt.tcp_user_timeout} min={0} t={t} onChange={(tcp_user_timeout) => updateSockopt(value, setValue, { ...sockopt, tcp_user_timeout })} />
                       <NumberField label="TCP Window Clamp" help={t("Maximum advertised TCP receive window in bytes. 0 leaves it unchanged.")} value={sockopt.tcp_window_clamp} min={0} t={t} onChange={(tcp_window_clamp) => updateSockopt(value, setValue, { ...sockopt, tcp_window_clamp })} />
-                      <div className="grid gap-2">
-                        <FieldLabel label="TCP Congestion" help={t("Linux TCP congestion-control algorithm used by this listener. Default leaves the system setting unchanged.")} t={t} />
+                      <FieldRow label="TCP Congestion" help={t("Linux TCP congestion-control algorithm used by this listener. Default leaves the system setting unchanged.")} t={t}>
                         <Select value={sockopt.tcp_congestion === "" ? "default" : sockopt.tcp_congestion} onValueChange={(tcp_congestion: "default" | "bbr" | "cubic" | "reno") => updateSockopt(value, setValue, { ...sockopt, tcp_congestion: tcp_congestion === "default" ? "" : tcp_congestion })}>
                           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                           <SelectContent><SelectItem value="default">{t("Default")}</SelectItem><SelectItem value="bbr">bbr</SelectItem><SelectItem value="cubic">cubic</SelectItem><SelectItem value="reno">reno</SelectItem></SelectContent>
                         </Select>
-                      </div>
-                      <div className="grid gap-2">
-                        <FieldLabel label="TProxy" help={t("Transparent-proxy listener mode. Keep Off for ordinary proxy inbounds.")} t={t} />
+                      </FieldRow>
+                      <FieldRow label="TProxy" help={t("Transparent-proxy listener mode. Keep Off for ordinary proxy inbounds.")} t={t}>
                         <Select value={sockopt.tproxy} onValueChange={(tproxy: SocketSettings["tproxy"]) => updateSockopt(value, setValue, { ...sockopt, tproxy })}>
                           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                           <SelectContent><SelectItem value="off">Off</SelectItem><SelectItem value="redirect">Redirect</SelectItem><SelectItem value="tproxy">TProxy</SelectItem></SelectContent>
                         </Select>
-                      </div>
+                      </FieldRow>
                     </div>
                     <div className="grid gap-3">
                       <SwitchField label="Proxy Protocol (Sockopt)" help={t("Enables PROXY protocol parsing at the socket layer. Use only when a trusted upstream always sends the header.")} checked={sockopt.accept_proxy_protocol} t={t} onChange={(accept_proxy_protocol) => updateSockopt(value, setValue, { ...sockopt, accept_proxy_protocol })} />
@@ -303,22 +440,20 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
                       {sockopt.custom.map((option, index) => (
                         <div key={index} className="grid gap-4 border-t pt-4 first:border-t-0 first:pt-0">
                           <ReadOnlyField label={t("System")} help={t("Operating system on which this custom socket option is applied. Relayward nodes currently use Linux.")} value="linux" t={t} />
-                          <div className="grid gap-2">
-                            <FieldLabel label={t("Network")} help={t("Restricts the custom socket option to all sockets, TCP, TCP over IPv4, or TCP over IPv6.")} t={t} />
+                          <FieldRow label={t("Network")} help={t("Restricts the custom socket option to all sockets, TCP, TCP over IPv4, or TCP over IPv6.")} t={t}>
                             <Select value={(option.network ?? "") === "" ? "all" : option.network} onValueChange={(network: "all" | "tcp" | "tcp4" | "tcp6") => updateCustomSockopt(value, setValue, index, { ...option, network: network === "all" ? "" : network })}>
                               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                               <SelectContent><SelectItem value="all">{t("All")}</SelectItem><SelectItem value="tcp">tcp</SelectItem><SelectItem value="tcp4">tcp4</SelectItem><SelectItem value="tcp6">tcp6</SelectItem></SelectContent>
                             </Select>
-                          </div>
+                          </FieldRow>
                           <TextField label={t("Level")} help={t("Numeric socket-option level passed to setsockopt, for example 6 for IPPROTO_TCP.")} value={option.level} required t={t} onChange={(level) => updateCustomSockopt(value, setValue, index, { ...option, level })} />
                           <TextField label={t("Opt")} help={t("Numeric socket-option name passed to setsockopt.")} value={option.opt} required t={t} onChange={(opt) => updateCustomSockopt(value, setValue, index, { ...option, opt })} />
-                          <div className="grid gap-2">
-                            <FieldLabel label={t("Type")} help={t("How Xray encodes the custom socket-option value: signed integer or string.")} t={t} />
+                          <FieldRow label={t("Type")} help={t("How Xray encodes the custom socket-option value: signed integer or string.")} t={t}>
                             <Select value={option.type} onValueChange={(type: "int" | "str") => updateCustomSockopt(value, setValue, index, { ...option, type })}>
                               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                               <SelectContent><SelectItem value="int">int</SelectItem><SelectItem value="str">str</SelectItem></SelectContent>
                             </Select>
-                          </div>
+                          </FieldRow>
                           <TextField label={t("Value")} help={t("Value passed to setsockopt using the selected type.")} value={option.value} required t={t} onChange={(entry) => updateCustomSockopt(value, setValue, index, { ...option, value: entry })} />
                           <div className="flex items-end justify-end">
                             <Button type="button" variant="outline" size="icon" title={t("Delete custom option")} aria-label={t("Delete custom option")} onClick={() => updateSockopt(value, setValue, { ...sockopt, custom: sockopt.custom.filter((_, candidate) => candidate !== index) })}><Trash2 /></Button>
@@ -328,21 +463,22 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
                     </ListSection>
                   </>
                 ) : null}
-              </ListSection>
+                </ListSection>
+              </FormCard>
             </TabsContent>
 
             <TabsContent value="security" className="grid gap-5">
-              <ReadOnlyField label={t("Security")} help={t("The transport security used by this inbound. REALITY authenticates the server without a conventional TLS certificate.")} value="REALITY" scope="reality" t={t} />
-              <div className="grid gap-4">
+              <FormCard>
+                <ReadOnlyField label={t("Security")} help={t("The transport security used by this inbound. REALITY authenticates the server without a conventional TLS certificate.")} value="REALITY" scope="reality" t={t} />
+                <div className="grid gap-4">
                 <SwitchField label={t("Show")} help={t("Enables additional REALITY handshake information in Xray logs. Leave disabled for normal operation.")} checked={reality.show} scope="server" t={t} onChange={(show) => setValue({ ...value, vless_reality: { ...reality, show } })} />
                 <NumberField label="Xver" help={t("PROXY protocol version used when REALITY forwards invalid handshakes to Target: 0 disables it, 1 uses v1, and 2 uses v2.")} value={reality.xver} min={0} max={2} scope="server" t={t} onChange={(xver) => setValue({ ...value, vless_reality: { ...reality, xver } })} />
-                <div className="grid gap-2">
-                  <FieldLabel label="uTLS" help={t("Browser TLS fingerprint sent by subscription clients when connecting to this REALITY inbound.")} scope="reality" t={t} />
+                <FieldRow label="uTLS" help={t("Browser TLS fingerprint sent by subscription clients when connecting to this REALITY inbound.")} scope="reality" t={t}>
                   <Select value={reality.fingerprint} onValueChange={(fingerprint) => setValue({ ...value, vless_reality: { ...reality, fingerprint } })}>
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>{fingerprints.map((fingerprint) => <SelectItem key={fingerprint} value={fingerprint}>{fingerprint === "ios" ? "iOS" : fingerprint}</SelectItem>)}</SelectContent>
                   </Select>
-                </div>
+                </FieldRow>
                 <TextField label={t("Target")} help={t("A real TLS destination in host:port form used to disguise rejected or unauthenticated REALITY connections.")} value={reality.target} placeholder="addons.mozilla.org:443" required scope="server" t={t} onChange={(target) => setValue({ ...value, vless_reality: { ...reality, target } })} />
                 <TextAreaField label="SNI" help={t("Server names accepted by REALITY, one per line. Clients use one of these values as serverName.")} value={reality.server_names.join("\n")} required scope="reality" t={t} onChange={(raw) => setValue({ ...value, vless_reality: { ...reality, server_names: lines(raw) } })} />
                 <NumberField label={t("Maximum time difference (ms)")} help={t("Maximum permitted clock difference between client and server in milliseconds. 0 disables this check.")} value={reality.max_time_diff} min={0} scope="server" t={t} onChange={(max_time_diff) => setValue({ ...value, vless_reality: { ...reality, max_time_diff } })} />
@@ -367,34 +503,39 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
                     <LimitFallbackFields title={t("Limit fallback download")} value={reality.limit_fallback_download} onChange={(limit_fallback_download) => setValue({ ...value, vless_reality: { ...reality, limit_fallback_download } })} t={t} />
                   </div>
                 ) : null}
-              </ListSection>
+                </ListSection>
+              </FormCard>
             </TabsContent>
 
             <TabsContent value="sniffing" className="grid gap-5">
-              <SwitchField label={t("Enable")} help={t("Lets Xray inspect initial traffic metadata to identify the destination protocol or domain for routing.")} checked={value.sniffing.enabled} scope="server" t={t} onChange={(enabled) => setValue({ ...value, sniffing: { ...value.sniffing, enabled } })} />
-              {value.sniffing.enabled ? (
-                <>
-                  <div className="grid gap-3">
-                    <FieldLabel label={t("Destination override")} help={t("Protocols whose sniffed destination may replace the original destination for routing or connection handling.")} scope="server" t={t} />
+              <FormCard>
+                <SwitchField label={t("Enable")} help={t("Lets Xray inspect initial traffic metadata to identify the destination protocol or domain for routing.")} checked={value.sniffing.enabled} scope="server" t={t} onChange={(enabled) => setValue({ ...value, sniffing: { ...value.sniffing, enabled } })} />
+                {value.sniffing.enabled ? (
+                  <>
+                    <FieldRow label={t("Destination override")} help={t("Protocols whose sniffed destination may replace the original destination for routing or connection handling.")} scope="server" t={t}>
+                      <div className="grid gap-3">
+                        {sniffingDestinations.map((destination) => (
+                          <label key={destination} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
+                            <Checkbox checked={value.sniffing.dest_override.includes(destination)} onCheckedChange={(checked) => setValue({ ...value, sniffing: { ...value.sniffing, dest_override: checked ? [...value.sniffing.dest_override, destination] : value.sniffing.dest_override.filter((item) => item !== destination) } })} />
+                            {destination}
+                          </label>
+                        ))}
+                      </div>
+                    </FieldRow>
                     <div className="grid gap-3">
-                      {sniffingDestinations.map((destination) => (
-                        <label key={destination} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
-                          <Checkbox checked={value.sniffing.dest_override.includes(destination)} onCheckedChange={(checked) => setValue({ ...value, sniffing: { ...value.sniffing, dest_override: checked ? [...value.sniffing.dest_override, destination] : value.sniffing.dest_override.filter((item) => item !== destination) } })} />
-                          {destination}
-                        </label>
-                      ))}
+                      <SwitchField label={t("Metadata only")} help={t("Uses connection metadata without inspecting application payload. Protocol and domain detection may be limited.")} checked={value.sniffing.metadata_only} scope="server" t={t} onChange={(metadata_only) => setValue({ ...value, sniffing: { ...value.sniffing, metadata_only } })} />
+                      <SwitchField label={t("Route only")} help={t("Uses the sniffed destination only for routing while preserving the original destination for the outbound connection.")} checked={value.sniffing.route_only} scope="server" t={t} onChange={(route_only) => setValue({ ...value, sniffing: { ...value.sniffing, route_only } })} />
                     </div>
-                  </div>
-                  <div className="grid gap-3">
-                    <SwitchField label={t("Metadata only")} help={t("Uses connection metadata without inspecting application payload. Protocol and domain detection may be limited.")} checked={value.sniffing.metadata_only} scope="server" t={t} onChange={(metadata_only) => setValue({ ...value, sniffing: { ...value.sniffing, metadata_only } })} />
-                    <SwitchField label={t("Route only")} help={t("Uses the sniffed destination only for routing while preserving the original destination for the outbound connection.")} checked={value.sniffing.route_only} scope="server" t={t} onChange={(route_only) => setValue({ ...value, sniffing: { ...value.sniffing, route_only } })} />
-                  </div>
-                  <TextAreaField label={t("Excluded IPs")} help={t("IP addresses, CIDRs, or geoip expressions that sniffing must not override, one per line.")} value={value.sniffing.ips_excluded.join("\n")} placeholder="geoip:private" scope="server" t={t} onChange={(raw) => setValue({ ...value, sniffing: { ...value.sniffing, ips_excluded: lines(raw) } })} />
-                  <TextAreaField label={t("Excluded domains")} help={t("Domain expressions that sniffing must not override, one per line.")} value={value.sniffing.domains_excluded.join("\n")} placeholder="domain:example.com" scope="server" t={t} onChange={(raw) => setValue({ ...value, sniffing: { ...value.sniffing, domains_excluded: lines(raw) } })} />
-                </>
-              ) : null}
+                    <TextAreaField label={t("Excluded IPs")} help={t("IP addresses, CIDRs, or geoip expressions that sniffing must not override, one per line.")} value={value.sniffing.ips_excluded.join("\n")} placeholder="geoip:private" scope="server" t={t} onChange={(raw) => setValue({ ...value, sniffing: { ...value.sniffing, ips_excluded: lines(raw) } })} />
+                    <TextAreaField label={t("Excluded domains")} help={t("Domain expressions that sniffing must not override, one per line.")} value={value.sniffing.domains_excluded.join("\n")} placeholder="domain:example.com" scope="server" t={t} onChange={(raw) => setValue({ ...value, sniffing: { ...value.sniffing, domains_excluded: lines(raw) } })} />
+                  </>
+                ) : null}
+              </FormCard>
             </TabsContent>
-          </Tabs>
+            </Tabs>
+
+            <CompatibilitySummary compatibility={compatibility} t={t} />
+          </div>
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>{t("Cancel")}</Button>
@@ -407,6 +548,7 @@ export function ServiceDialog({ initial, editingID, existingIDs, t, onClose, onA
 }
 
 function updateFallback(value: ProxyService, setValue: (value: ProxyService) => void, index: number, fallback: VLESSFallback) {
+  if (value.vless_reality == null) return
   const fallbacks = value.vless_reality.fallbacks.map((candidate, candidateIndex) => candidateIndex === index ? fallback : candidate)
   setValue({ ...value, vless_reality: { ...value.vless_reality, fallbacks } })
 }
@@ -426,18 +568,50 @@ function numberList(value: string): number[] {
   return value.split(/[\s,]+/).map(Number).filter((item) => Number.isInteger(item))
 }
 
-function FieldLabel({ label, help, scope = "server", t }: { label: string; help: string; scope?: FieldScope; t: Translator }) {
+function FormCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="grid min-w-0 gap-1.5">
+    <Card className="min-w-0 gap-0 py-4 sm:py-6">
+      <CardContent className="grid min-w-0 gap-5 px-4 sm:px-6">{children}</CardContent>
+    </Card>
+  )
+}
+
+function FieldLabel({ label, help, scope = "server", t }: { label: string; help: string; scope?: FieldScope; t: Translator }) {
+  const capability = scope === "server" ? null : capabilities[scope]
+  const compatibilityLabel = capability == null
+    ? ""
+    : clientCores.map((core) => `${coreName(core)}: ${supportDescription(capability.cores[core], t)}`).join("; ")
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 sm:justify-end sm:text-right">
       <div className="flex min-w-0 items-center gap-1.5">
         <Label>{label}</Label>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button type="button" className="inline-flex size-5 shrink-0 cursor-help items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`${label}: ${help}`}>
+            <button type="button" className="inline-flex size-5 shrink-0 cursor-help items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`${label}: ${help}${compatibilityLabel === "" ? "" : `. ${compatibilityLabel}`}`}>
               <CircleHelp className="size-3.5" aria-hidden="true" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={6} className="max-w-72 whitespace-normal leading-relaxed">{help}</TooltipContent>
+          <TooltipContent side="top" sideOffset={6} className="max-w-80 whitespace-normal p-3 text-left leading-relaxed">
+            <div className="grid gap-2.5">
+              <p>{help}</p>
+              {capability ? (
+                <div className="grid gap-1.5 border-t border-primary-foreground/20 pt-2">
+                  {clientCores.map((core) => {
+                    const support = capability.cores[core]
+                    return (
+                      <div key={core} className="flex items-center justify-between gap-4">
+                        <span>{coreName(core)}</span>
+                        <span className="flex items-center gap-1 text-right">
+                          {support.status === "supported" ? <CheckCircle2 className="size-3.5" aria-hidden="true" /> : support.status === "not-generated" ? <XCircle className="size-3.5" aria-hidden="true" /> : <CircleMinus className="size-3.5" aria-hidden="true" />}
+                          {supportDescription(support, t)}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </TooltipContent>
         </Tooltip>
       </div>
       <FieldScopeBadges scope={scope} t={t} />
@@ -445,24 +619,36 @@ function FieldLabel({ label, help, scope = "server", t }: { label: string; help:
   )
 }
 
+function FieldRow({ label, help, scope = "server", t, children }: { label: string; help: string; scope?: FieldScope; t: Translator; children: React.ReactNode }) {
+  return (
+    <div className="grid min-w-0 gap-2 sm:grid-cols-[10rem_minmax(0,1fr)] sm:items-start sm:gap-4">
+      <FieldLabel label={label} help={help} scope={scope} t={t} />
+      <div className="grid min-w-0 max-w-2xl gap-2">
+        {children}
+        <FieldCompatibilityBadges scope={scope} t={t} />
+      </div>
+    </div>
+  )
+}
+
 function ReadOnlyField({ label, help, value, scope = "server", t }: { label: string; help: string; value: string; scope?: FieldScope; t: Translator }) {
-  return <div className="grid gap-2"><FieldLabel label={label} help={help} scope={scope} t={t} /><div className="flex h-9 items-center rounded-md border bg-muted/50 px-3 text-sm text-muted-foreground">{value}</div></div>
+  return <FieldRow label={label} help={help} scope={scope} t={t}><div className="flex h-9 items-center rounded-md border bg-muted/50 px-3 text-sm text-muted-foreground">{value}</div></FieldRow>
 }
 
 function TextField({ label, help, value, placeholder, required, maxLength, scope = "server", t, onChange }: { label: string; help: string; value: string; placeholder?: string; required?: boolean; maxLength?: number; scope?: FieldScope; t: Translator; onChange: (value: string) => void }) {
-  return <div className="grid gap-2"><FieldLabel label={label} help={help} scope={scope} t={t} /><Input value={value} placeholder={placeholder} required={required} maxLength={maxLength} onChange={(event) => onChange(event.target.value)} /></div>
+  return <FieldRow label={label} help={help} scope={scope} t={t}><Input value={value} placeholder={placeholder} required={required} maxLength={maxLength} onChange={(event) => onChange(event.target.value)} /></FieldRow>
 }
 
 function NumberField({ label, help, value, min, max, required, scope = "server", t, onChange }: { label: string; help: string; value: number; min: number; max?: number; required?: boolean; scope?: FieldScope; t: Translator; onChange: (value: number) => void }) {
-  return <div className="grid gap-2"><FieldLabel label={label} help={help} scope={scope} t={t} /><Input type="number" value={value} min={min} max={max} required={required} onChange={(event) => onChange(Number(event.target.value))} /></div>
+  return <FieldRow label={label} help={help} scope={scope} t={t}><Input type="number" value={value} min={min} max={max} required={required} onChange={(event) => onChange(Number(event.target.value))} /></FieldRow>
 }
 
 function TextAreaField({ label, help, value, placeholder, required, readOnly, scope = "server", t, onChange }: { label: string; help: string; value: string; placeholder?: string; required?: boolean; readOnly?: boolean; scope?: FieldScope; t: Translator; onChange: (value: string) => void }) {
-  return <div className="grid gap-2"><FieldLabel label={label} help={help} scope={scope} t={t} /><Textarea value={value} placeholder={placeholder} required={required} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} /></div>
+  return <FieldRow label={label} help={help} scope={scope} t={t}><Textarea value={value} placeholder={placeholder} required={required} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} /></FieldRow>
 }
 
 function SwitchField({ label, help, checked, scope = "server", t, onChange }: { label: string; help: string; checked: boolean; scope?: FieldScope; t: Translator; onChange: (value: boolean) => void }) {
-  return <div className="flex min-h-14 items-center justify-between gap-4 rounded-lg border px-4 py-3"><FieldLabel label={label} help={help} scope={scope} t={t} /><Switch checked={checked} onCheckedChange={onChange} /></div>
+  return <FieldRow label={label} help={help} scope={scope} t={t}><div className="flex h-9 items-center"><Switch checked={checked} onCheckedChange={onChange} /></div></FieldRow>
 }
 
 function FieldScopeBadges({ scope, t }: { scope: FieldScope; t: Translator }) {
@@ -470,48 +656,73 @@ function FieldScopeBadges({ scope, t }: { scope: FieldScope; t: Translator }) {
     return <Badge variant="outline" className="text-muted-foreground"><Server />{t("Server only")}</Badge>
   }
   const capability = capabilities[scope]
+  return capability.restricted
+    ? <Badge variant="outline" className="border-destructive/30 bg-destructive/5 text-destructive">{t("Restricted")}</Badge>
+    : null
+}
+
+function FieldCompatibilityBadges({ scope, t }: { scope: FieldScope; t: Translator }) {
+  if (scope === "server") return null
+  const capability = capabilities[scope]
   return (
-    <div className="flex min-w-0 flex-wrap gap-1.5">
-      {clientCores.map((core) => (
-        <CoreBadge key={core} core={core} support={capability.cores[core]} t={t} />
-      ))}
+    <div className="grid grid-cols-3 gap-1.5 sm:flex sm:flex-wrap">
+      {clientCores.map((core) => {
+        const support = capability.cores[core]
+        const detail = support.status === "supported"
+          ? `${support.version}${support.evidence === "minimum" ? "+" : ""}`
+          : support.status === "not-generated" ? t("Not generated") : t("Not required")
+        return (
+          <Badge
+            key={core}
+            variant="outline"
+            className={support.status === "supported" ? "min-w-0 border-success/30 bg-success-soft px-1.5 text-success sm:px-2" : support.status === "not-generated" ? "min-w-0 border-destructive/30 bg-destructive/5 px-1.5 text-destructive sm:px-2" : "min-w-0 px-1.5 text-muted-foreground sm:px-2"}
+            title={`${coreName(core)} · ${supportDescription(support, t)}`}
+          >
+            {support.status === "supported" ? <CheckCircle2 aria-hidden="true" /> : support.status === "not-generated" ? <XCircle aria-hidden="true" /> : <CircleMinus aria-hidden="true" />}
+            <span className="truncate">{coreName(core)}</span>
+            <span className="hidden sm:inline">· {detail}</span>
+          </Badge>
+        )
+      })}
     </div>
   )
 }
 
-function CoreBadge({ core, support, t }: { core: ClientCore; support: (typeof capabilities)[CapabilityID]["cores"][ClientCore]; t: Translator }) {
-  const name = coreName(core)
+function supportDescription(support: (typeof capabilities)[CapabilityID]["cores"][ClientCore], t: Translator): string {
   if (support.status === "not-generated") {
-    return <Badge variant="outline" className="border-destructive/30 bg-destructive/5 text-destructive"><XCircle />{name} · {t("Not generated")}</Badge>
+    return t("Not generated")
   }
   if (support.status === "optional-ignored") {
-    return <Badge variant="outline" className="text-muted-foreground"><CircleMinus />{name} · {t("Not required")}</Badge>
+    return t("Not required")
   }
-  const evidence = support.evidence === "minimum" ? t("From {version}", { version: support.version }) : t("Verified {version}", { version: support.version })
-  return <Badge variant="outline" className="border-success/30 bg-success-soft text-success"><CheckCircle2 />{name} · {evidence}</Badge>
+  return support.evidence === "minimum" ? t("From {version}", { version: support.version }) : t("Verified {version}", { version: support.version })
 }
 
 function CompatibilitySummary({ compatibility, t }: { compatibility: ReturnType<typeof compatibilityFor>; t: Translator }) {
   return (
-    <section className="grid gap-3 rounded-lg border bg-muted/30 p-4" aria-live="polite">
-      <div className="grid gap-1">
+    <section className="order-first grid gap-2 self-start rounded-lg border bg-background p-2 shadow-sm lg:order-last lg:gap-3 lg:p-4" aria-live="polite">
+      <div className="col-span-full grid gap-1">
         <h3 className="text-sm font-medium">{t("Client compatibility")}</h3>
-        <p className="text-sm text-muted-foreground">{t("Updated from the parameters currently enabled below.")}</p>
+        <p className="hidden text-sm text-muted-foreground sm:block">{t("Updated from the parameters currently enabled below.")}</p>
       </div>
-      <div className="grid gap-2">
-        {compatibility.map((entry) => (
-          <div key={entry.core} className="flex min-w-0 items-start gap-3 rounded-md border bg-background px-3 py-2.5 text-sm">
-            {entry.supported ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" aria-hidden="true" /> : <XCircle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />}
-            <div className="min-w-0">
-              <span className="font-medium">{coreName(entry.core)}</span>
-              <span className="text-muted-foreground"> · {entry.supported
-                ? entry.requirement?.evidence === "minimum"
-                  ? t("Supported from {version}", { version: entry.requirement.version })
-                  : t("Supported; verified with {version}", { version: entry.requirement?.version ?? "" })
-                : t("Subscription not generated: {parameters}", { parameters: entry.blockers.map((blocker) => t(capabilities[blocker].label)).join(t(", ")) })}</span>
+      <div className="grid grid-cols-3 gap-2 lg:grid-cols-1">
+        {compatibility.map((entry) => {
+          const description = entry.supported
+            ? entry.requirement?.evidence === "minimum"
+              ? t("Supported from {version}", { version: entry.requirement.version })
+              : t("Supported; verified with {version}", { version: entry.requirement?.version ?? "" })
+            : t("Subscription not generated: {parameters}", { parameters: entry.blockers.map((blocker) => t(capabilities[blocker].label)).join(t(", ")) })
+          return (
+            <div key={entry.core} className="flex min-w-0 flex-col items-center gap-1 rounded-md border bg-muted/20 px-1 py-1.5 text-center text-xs lg:flex-row lg:items-start lg:gap-3 lg:px-3 lg:py-2.5 lg:text-left lg:text-sm" title={`${coreName(entry.core)} · ${description}`}>
+              {entry.supported ? <CheckCircle2 className="size-4 shrink-0 text-success lg:mt-0.5" aria-hidden="true" /> : <XCircle className="size-4 shrink-0 text-destructive lg:mt-0.5" aria-hidden="true" />}
+              <div className="min-w-0">
+                <span className="font-medium">{coreName(entry.core)}</span>
+                <span className="hidden text-muted-foreground lg:inline"> · {description}</span>
+                <span className="sr-only lg:hidden"> · {description}</span>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </section>
   )

@@ -14,7 +14,7 @@ import (
 	"github.com/Relayward/relayward-sdk/contract"
 	"github.com/Relayward/relayward-sdk/manifest"
 
-	"github.com/Relayward/relayward-plugin-xray/internal/pluginmeta"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/pluginmeta"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 	value := manifest.Manifest{
 		APIVersion: contract.ManifestAPIVersion,
 		ID:         pluginmeta.ID,
-		Name:       "Relayward Xray",
+		Name:       "Xray",
 		Version:    *version,
 		Kind:       manifest.KindRuntime,
 		Requires: manifest.Requirements{

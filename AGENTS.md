@@ -1,8 +1,8 @@
-# Relayward Xray Plugin AGENTS.md
+# Xray Plugin for Relayward AGENTS.md
 
 ## Project Role
 
-This repository owns the official Xray runtime plugin for Relayward. It adapts the Relayward plugin contracts to an independently managed Xray process on a node.
+This repository owns an independently maintained Xray runtime plugin for Relayward. It is tailored to the maintainer's real deployments and adapts Relayward plugin contracts to an independently managed Xray process on a node.
 
 The Relayward control plane, Agent runtime, shared SDK contracts, risk analysis, and protocol-specific product configuration do not belong in this repository.
 
@@ -11,6 +11,7 @@ The Relayward control plane, Agent runtime, shared SDK contracts, risk analysis,
 - Implement both the center and node plugin entry points required by the Relayward SDK.
 - Keep Xray-specific configuration and lifecycle behavior inside this repository.
 - Use official `XTLS/Xray-core` release artifacts by default. Do not build or depend on a maintained Xray fork.
+- Support only explicitly documented deployment combinations. Do not pursue complete Xray protocol, transport, field, platform, or legacy-configuration coverage.
 - Treat the plugin configuration as opaque to Relayward. Do not introduce protocol, certificate, inbound, or outbound product models until their requirements are explicitly approved.
 - Do not add sing-box support here. A different runtime must use a separate plugin repository.
 
@@ -43,6 +44,7 @@ The Relayward control plane, Agent runtime, shared SDK contracts, risk analysis,
 ## Git And Releases
 
 - Keep commits, tags, releases, and release notes within this repository.
+- Use `qqqasdwx/relayward-plugin-xray` as `origin`; treat the archived organization repository as read-only upstream history.
 - Do not push, tag, or publish a release without explicit confirmation.
 - Release artifacts must include the plugin manifest and Linux AMD64 center and node binaries.
 - Do not commit downloaded Xray archives, Xray binaries, generated release bundles, local state, or credentials.
