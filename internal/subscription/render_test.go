@@ -19,6 +19,10 @@ func TestRenderMultipleServicesInAllFormatsWithStableCredentials(t *testing.T) {
 	request := &centerpluginv1.RenderSubscriptionRequest{
 		AuthorizationId: "10000000-0000-4000-8000-000000000001",
 		NodeId:          "20000000-0000-4000-8000-000000000002",
+		Endpoints: []*centerpluginv1.SubscriptionEndpoint{{
+			EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "Public", Kind: "nat",
+			Address: "edge.example.com", PublicPortOverrides: map[string]uint32{"reality-backup": 9443},
+		}},
 		Services: []*centerpluginv1.SubscriptionServiceBinding{
 			{ServiceId: "reality-backup", DisplayName: "Edge Backup"},
 			{ServiceId: "reality-main", DisplayName: "Edge Main"},
@@ -40,10 +44,10 @@ func TestRenderMultipleServicesInAllFormatsWithStableCredentials(t *testing.T) {
 		first.Services[0].Uris[0] == first.Services[1].Uris[0] {
 		t.Fatalf("rendered subscription = %+v", first)
 	}
-	if !bytes.Contains(first.Services[0].MihomoProxiesJson[0], []byte(`"server":"backup.example.com"`)) ||
+	if !bytes.Contains(first.Services[0].MihomoProxiesJson[0], []byte(`"server":"edge.example.com"`)) ||
 		!bytes.Contains(first.Services[1].MihomoProxiesJson[0], []byte(`"server":"edge.example.com"`)) ||
 		!bytes.Contains(first.Services[0].SingBoxOutboundsJson[0], []byte(`"server_port":9443`)) ||
-		!bytes.Contains(first.Services[1].SingBoxOutboundsJson[0], []byte(`"server_port":8443`)) {
+		!bytes.Contains(first.Services[1].SingBoxOutboundsJson[0], []byte(`"server_port":443`)) {
 		t.Fatalf("rendered fragments = %+v", first.Services)
 	}
 }
@@ -54,6 +58,9 @@ func TestRenderRejectsUnknownService(t *testing.T) {
 	request := &centerpluginv1.RenderSubscriptionRequest{
 		AuthorizationId: "10000000-0000-4000-8000-000000000001",
 		NodeId:          "20000000-0000-4000-8000-000000000002",
+		Endpoints: []*centerpluginv1.SubscriptionEndpoint{{
+			EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "Public", Kind: "nat", Address: "edge.example.com",
+		}},
 		Services: []*centerpluginv1.SubscriptionServiceBinding{{
 			ServiceId: "reality-main", DisplayName: "Edge VLESS",
 		}},
@@ -70,9 +77,9 @@ func TestRenderShadowsocks2022AndStandardSubscriptions(t *testing.T) {
 		method := method
 		t.Run(method, func(t *testing.T) {
 			t.Parallel()
-			configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+			configuration, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
 				Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
-				Listen: "0.0.0.0", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+				Listen: "0.0.0.0", Port: 8388,
 				Shadowsocks: &config.EditableShadowsocks{Method: method, Network: config.ShadowsocksNetworkTCPUDP},
 			}})
 			if err != nil {
@@ -81,6 +88,9 @@ func TestRenderShadowsocks2022AndStandardSubscriptions(t *testing.T) {
 			request := &centerpluginv1.RenderSubscriptionRequest{
 				AuthorizationId: "10000000-0000-4000-8000-000000000001",
 				NodeId:          "20000000-0000-4000-8000-000000000002",
+				Endpoints: []*centerpluginv1.SubscriptionEndpoint{{
+					EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "Public", Kind: "nat", Address: "ss.example.com",
+				}},
 				Services: []*centerpluginv1.SubscriptionServiceBinding{{
 					ServiceId: "shadowsocks-main", DisplayName: "Edge SS",
 				}},
@@ -128,85 +138,70 @@ func TestRenderShadowsocks2022AndStandardSubscriptions(t *testing.T) {
 	}
 }
 
-func TestRenderSubscriptionCompatibilityForAdvancedInboundSettings(t *testing.T) {
+func TestRenderSubscriptionWithoutVisionFlow(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name        string
-		mutate      func(*config.Service)
-		wantURI     map[string]string
-		wantMihomo  int
-		wantSingBox int
-	}{
-		{
-			name: "RAW HTTP header",
-			mutate: func(service *config.Service) {
-				service.TCP = config.TCPSettings{Header: config.TCPHeader{Type: config.TCPHeaderHTTP,
-					Request:  &config.TCPHTTPRequest{Version: "1.1", Method: "GET", Path: []string{"/edge"}, Headers: map[string][]string{"Host": {"addons.mozilla.org"}}},
-					Response: &config.TCPHTTPResponse{Version: "1.1", Status: "200", Reason: "OK", Headers: map[string][]string{}},
-				}}
+	configuration := testConfiguration(t)
+	for index := range configuration.Services {
+		if configuration.Services[index].ServiceID == "reality-main" {
+			configuration.Services[index].VLESSReality.Flow = ""
+		}
+	}
+	response, err := Render(configuration, &centerpluginv1.RenderSubscriptionRequest{
+		AuthorizationId: "10000000-0000-4000-8000-000000000001",
+		NodeId:          "20000000-0000-4000-8000-000000000002",
+		Endpoints: []*centerpluginv1.SubscriptionEndpoint{{
+			EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "Public", Kind: "nat", Address: "edge.example.com",
+		}},
+		Services: []*centerpluginv1.SubscriptionServiceBinding{{ServiceId: "reality-main", DisplayName: "Edge Main"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contribution := response.Services[0]
+	parsed, err := url.Parse(contribution.Uris[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query().Get("encryption") != "none" || parsed.Query().Get("flow") != "" ||
+		len(contribution.MihomoProxiesJson) != 1 || len(contribution.SingBoxOutboundsJson) != 1 {
+		t.Fatalf("subscription contribution = %+v", contribution)
+	}
+}
+
+func TestRenderExpandsEachServiceAcrossEndpoints(t *testing.T) {
+	t.Parallel()
+	configuration := testConfiguration(t)
+	request := &centerpluginv1.RenderSubscriptionRequest{
+		AuthorizationId: "10000000-0000-4000-8000-000000000001",
+		NodeId:          "20000000-0000-4000-8000-000000000002",
+		Services:        []*centerpluginv1.SubscriptionServiceBinding{{ServiceId: "reality-main", DisplayName: "Edge Main"}},
+		Endpoints: []*centerpluginv1.SubscriptionEndpoint{
+			{
+				EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "IPv4", Kind: "direct",
+				Address: "203.0.113.10", PublicPortOverrides: map[string]uint32{"reality-main": 8443},
 			},
-			wantURI: map[string]string{"headerType": "http", "path": "/edge", "host": "addons.mozilla.org"},
-		},
-		{
-			name: "ML-DSA",
-			mutate: func(service *config.Service) {
-				service.VLESSReality.MLDSA65Seed = base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("s", 32)))
-				service.VLESSReality.MLDSA65Verify = base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("v", 1952)))
+			{
+				EndpointId: "40000000-0000-4000-8000-000000000004", DisplayName: "IPv6", Kind: "direct",
+				Address: "2001:db8::10",
 			},
-			wantURI: map[string]string{"pqv": base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("v", 1952)))},
-		},
-		{
-			name: "VLESS Encryption",
-			mutate: func(service *config.Service) {
-				serverKey := base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("d", 32)))
-				clientKey := base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("e", 32)))
-				service.VLESSReality.Decryption = "mlkem768x25519plus.native.600s." + serverKey
-				service.VLESSReality.Encryption = "mlkem768x25519plus.native.0rtt." + clientKey
-			},
-			wantURI:    map[string]string{"encryption": "mlkem768x25519plus.native.0rtt." + base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("e", 32)))},
-			wantMihomo: 1,
-		},
-		{
-			name: "empty Flow",
-			mutate: func(service *config.Service) {
-				service.VLESSReality.Flow = ""
-			},
-			wantURI: map[string]string{"encryption": "none"}, wantMihomo: 1, wantSingBox: 1,
 		},
 	}
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			configuration := testConfiguration(t)
-			service, _ := configuration.FindService("reality-main")
-			test.mutate(&service)
-			for index := range configuration.Services {
-				if configuration.Services[index].ServiceID == service.ServiceID {
-					configuration.Services[index] = service
-				}
-			}
-			response, err := Render(configuration, &centerpluginv1.RenderSubscriptionRequest{
-				AuthorizationId: "10000000-0000-4000-8000-000000000001",
-				NodeId:          "20000000-0000-4000-8000-000000000002",
-				Services:        []*centerpluginv1.SubscriptionServiceBinding{{ServiceId: "reality-main", DisplayName: "Edge Main"}},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			contribution := response.Services[0]
-			parsed, err := url.Parse(contribution.Uris[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			for key, want := range test.wantURI {
-				if got := parsed.Query().Get(key); got != want {
-					t.Fatalf("URI query %s = %q, want %q", key, got, want)
-				}
-			}
-			if len(contribution.MihomoProxiesJson) != test.wantMihomo || len(contribution.SingBoxOutboundsJson) != test.wantSingBox {
-				t.Fatalf("subscription formats = URI %d, Mihomo %d, sing-box %d", len(contribution.Uris), len(contribution.MihomoProxiesJson), len(contribution.SingBoxOutboundsJson))
-			}
-		})
+	response, err := Render(configuration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contribution := response.Services[0]
+	if len(contribution.Uris) != 2 || len(contribution.MihomoProxiesJson) != 2 || len(contribution.SingBoxOutboundsJson) != 2 {
+		t.Fatalf("expanded contribution = %+v", contribution)
+	}
+	joined := strings.Join(contribution.Uris, "\n")
+	if !strings.Contains(joined, "203.0.113.10:8443") || !strings.Contains(joined, "[2001:db8::10]:443") ||
+		!strings.Contains(joined, "Edge%20Main%20/%20IPv4") || !strings.Contains(joined, "Edge%20Main%20/%20IPv6") {
+		t.Fatalf("expanded URIs = %q", contribution.Uris)
+	}
+	if !bytes.Contains(contribution.MihomoProxiesJson[0], []byte(`"name":"Edge Main / `)) ||
+		!bytes.Contains(contribution.SingBoxOutboundsJson[0], []byte(`"tag":"Edge Main / `)) {
+		t.Fatalf("expanded fragments = %+v", contribution)
 	}
 }
 
@@ -222,20 +217,16 @@ func TestSupportedFormatsMatchVLESSRealityRenderer(t *testing.T) {
 
 func testConfiguration(t *testing.T) config.Configuration {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
+	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 8443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 444, PublicHost: "backup.example.com", PublicPort: 9443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 444,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	})
 	if err != nil {

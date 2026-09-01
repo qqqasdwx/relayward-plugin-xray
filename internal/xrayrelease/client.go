@@ -81,10 +81,9 @@ func (client *Client) Resolve(ctx context.Context, version string) (Asset, error
 		return Asset{}, errors.New("official Xray release metadata exceeds size limit")
 	}
 	var release struct {
-		TagName    string `json:"tag_name"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-		Assets     []struct {
+		TagName string `json:"tag_name"`
+		Draft   bool   `json:"draft"`
+		Assets  []struct {
 			Name               string `json:"name"`
 			Size               int64  `json:"size"`
 			Digest             string `json:"digest"`
@@ -94,8 +93,8 @@ func (client *Client) Resolve(ctx context.Context, version string) (Asset, error
 	if err := json.Unmarshal(raw, &release); err != nil {
 		return Asset{}, fmt.Errorf("decode official Xray release: %w", err)
 	}
-	if release.TagName != "v"+version || release.Draft || release.Prerelease {
-		return Asset{}, errors.New("requested Xray version is not a published stable release")
+	if release.TagName != "v"+version || release.Draft {
+		return Asset{}, errors.New("requested Xray version is not a published release")
 	}
 	var result Asset
 	found := 0

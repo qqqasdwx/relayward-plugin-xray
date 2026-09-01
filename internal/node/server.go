@@ -45,6 +45,7 @@ func (server *Server) GetInfo(context.Context, *nodepluginv1.GetInfoRequest) (*n
 		Capabilities: []string{
 			nodepluginv1.CapabilityRecentActivity,
 			nodepluginv1.CapabilityDynamicBlocking,
+			nodepluginv1.CapabilityListenerStatus,
 			nodepluginv1.CapabilityServiceControl,
 			nodepluginv1.CapabilityTrafficCounters,
 		},
@@ -213,5 +214,24 @@ func (server *Server) GetStatus(context.Context, *nodepluginv1.GetStatusRequest)
 		ConfigurationSha256: runtimeStatus.ConfigurationSHA256,
 		Health:              health,
 		Message:             runtimeStatus.Message,
+		Listeners:           listenerResponses(runtimeStatus.Listeners),
 	}, nil
+}
+
+func listenerResponses(values []xrayruntime.ListenerStatus) []*nodepluginv1.ListenerStatus {
+	result := make([]*nodepluginv1.ListenerStatus, len(values))
+	for index, value := range values {
+		state := nodepluginv1.ListenerState_LISTENER_STATE_UNKNOWN
+		switch value.State {
+		case xrayruntime.ListenerListening:
+			state = nodepluginv1.ListenerState_LISTENER_STATE_LISTENING
+		case xrayruntime.ListenerNotListening:
+			state = nodepluginv1.ListenerState_LISTENER_STATE_NOT_LISTENING
+		}
+		result[index] = &nodepluginv1.ListenerStatus{
+			ServiceId: value.ServiceID, Network: value.Network, ListenAddress: value.ListenAddress,
+			Port: uint32(value.Port), State: state,
+		}
+	}
+	return result
 }

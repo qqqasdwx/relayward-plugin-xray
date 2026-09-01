@@ -54,9 +54,18 @@ func TestServerRejectsPermissions(t *testing.T) {
 
 type hostStub struct {
 	centerpluginv1.PluginHostClient
-	configuration *centerpluginv1.NodePluginConfiguration
-	configured    *centerpluginv1.ConfigureNodePluginRequest
-	services      *centerpluginv1.ReplaceServicesRequest
+	configuration     *centerpluginv1.NodePluginConfiguration
+	configured        *centerpluginv1.ConfigureNodePluginRequest
+	services          *centerpluginv1.ReplaceServicesRequest
+	diagnosticRequest *centerpluginv1.DiagnoseNodePortsRequest
+	diagnostics       *centerpluginv1.DiagnoseNodePortsResponse
+}
+
+func (host *hostStub) DiagnoseNodePorts(_ context.Context, request *centerpluginv1.DiagnoseNodePortsRequest,
+	_ ...grpc.CallOption,
+) (*centerpluginv1.DiagnoseNodePortsResponse, error) {
+	host.diagnosticRequest = request
+	return host.diagnostics, nil
 }
 
 func (host *hostStub) ReplaceServices(_ context.Context, request *centerpluginv1.ReplaceServicesRequest,
@@ -131,7 +140,8 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
 	if err != nil || !json.Valid(loaded.GetJson()) || jsonContainsKey(loaded.Json, "credential_seed") ||
-		!jsonContainsKey(loaded.Json, "private_key") || !jsonContainsKey(loaded.Json, "public_key") || jsonContainsNull(loaded.Json) {
+		jsonContainsKey(loaded.Json, "private_key") || jsonContainsKey(loaded.Json, "public_key") ||
+		jsonContainsKey(loaded.Json, "short_ids") || jsonContainsNull(loaded.Json) {
 		t.Fatalf("configuration.get = %s, %v", loaded.GetJson(), err)
 	}
 	configuration.Services[0].DisplayName = "Updated VLESS"
@@ -255,6 +265,9 @@ func TestRenderSubscription(t *testing.T) {
 	request := &centerpluginv1.RenderSubscriptionRequest{
 		AuthorizationId: "10000000-0000-4000-8000-000000000001",
 		NodeId:          "20000000-0000-4000-8000-000000000002",
+		Endpoints: []*centerpluginv1.SubscriptionEndpoint{{
+			EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "Public", Kind: "nat", Address: "edge.example.com",
+		}},
 		Services: []*centerpluginv1.SubscriptionServiceBinding{
 			{ServiceId: "reality-backup", DisplayName: "Edge Backup"},
 			{ServiceId: "reality-main", DisplayName: "Edge Main"},
@@ -269,22 +282,55 @@ func TestRenderSubscription(t *testing.T) {
 	}
 }
 
+func TestInvokeUIDiagnosesConfiguredPorts(t *testing.T) {
+	configuration := testConfigurationJSON(t)
+	digest, err := agentv1.PluginConfigurationDigest(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &hostStub{
+		configuration: &centerpluginv1.NodePluginConfiguration{
+			Generation: 1, Version: "0.1.0", Sha256: digest, Json: configuration,
+		},
+		diagnostics: &centerpluginv1.DiagnoseNodePortsResponse{Diagnostics: []*centerpluginv1.ServicePortDiagnostic{
+			{ServiceId: "reality-backup", Network: "tcp", LocalPort: 8443,
+				ListenAddress: "0.0.0.0", LocalState: centerpluginv1.LocalListenerState_LOCAL_LISTENER_STATE_LISTENING,
+				LocalObservedAtUnixNano: 1},
+			{ServiceId: "reality-main", Network: "tcp", LocalPort: 443,
+				ListenAddress: "0.0.0.0", LocalState: centerpluginv1.LocalListenerState_LOCAL_LISTENER_STATE_LISTENING,
+				LocalObservedAtUnixNano: 1},
+		}},
+	}
+	server := New("0.1.0", host)
+	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
+		t.Fatal(err)
+	}
+	nodeID := "20000000-0000-4000-8000-000000000002"
+	response, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{
+		Method: "diagnostics.get", Json: []byte(`{"node_id":"` + nodeID + `"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.diagnosticRequest == nil || len(host.diagnosticRequest.Ports) != 2 ||
+		host.diagnosticRequest.Ports[0].ServiceId != "reality-backup" ||
+		!jsonContainsValue(response.Json, "listening") {
+		t.Fatalf("diagnostics request = %+v, response = %s", host.diagnosticRequest, response.Json)
+	}
+}
+
 func testConfigurationJSON(t *testing.T) json.RawMessage {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
+	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 8443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	})
 	if err != nil {
@@ -292,7 +338,7 @@ func testConfigurationJSON(t *testing.T) json.RawMessage {
 	}
 	value.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{{
 		RuleID: "block-private", DisplayName: "Block private", Enabled: true,
-		IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
+		DestinationIPs: []string{"192.0.2.0/24"}, OutboundTag: config.RoutingOutboundBlocked,
 	}}}
 	value.DNS = config.DNSConfiguration{
 		Enabled: true, QueryStrategy: config.DNSQueryStrategyUseIPv4,

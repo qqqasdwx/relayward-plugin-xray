@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,15 +25,16 @@ const (
 	ServiceTypeVLESSReality = "vless-reality"
 	ServiceTypeShadowsocks  = "shadowsocks"
 	VLESSVisionFlow         = "xtls-rprx-vision"
+	MinimumVLESSXrayVersion = "26.7.11"
 	MaximumServices         = 64
+	MaximumOutbounds        = 64
 	MaximumRoutingRules     = 128
 	MaximumRoutingValues    = 64
 	MaximumDNSServers       = 16
 )
 
 var (
-	serviceIDPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	publicDomainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`)
+	serviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
 
 type Configuration struct {
@@ -40,6 +42,7 @@ type Configuration struct {
 	APIPort        uint16               `json:"api_port"`
 	CredentialSeed string               `json:"credential_seed"`
 	Services       []Service            `json:"services"`
+	Outbounds      []Outbound           `json:"outbounds"`
 	Routing        RoutingConfiguration `json:"routing"`
 	DNS            DNSConfiguration     `json:"dns"`
 }
@@ -51,8 +54,6 @@ type Service struct {
 	DisplayName  string          `json:"display_name"`
 	Listen       string          `json:"listen"`
 	Port         uint16          `json:"port"`
-	PublicHost   string          `json:"public_host"`
-	PublicPort   uint16          `json:"public_port"`
 	TCP          TCPSettings     `json:"tcp"`
 	Sockopt      *SocketSettings `json:"sockopt,omitempty"`
 	Sniffing     Sniffing        `json:"sniffing"`
@@ -64,6 +65,7 @@ type EditableConfiguration struct {
 	XrayVersion string               `json:"xray_version"`
 	APIPort     uint16               `json:"api_port"`
 	Services    []EditableService    `json:"services"`
+	Outbounds   []Outbound           `json:"outbounds"`
 	Routing     RoutingConfiguration `json:"routing"`
 	DNS         DNSConfiguration     `json:"dns"`
 }
@@ -75,8 +77,6 @@ type EditableService struct {
 	DisplayName  string                `json:"display_name"`
 	Listen       string                `json:"listen"`
 	Port         uint16                `json:"port"`
-	PublicHost   string                `json:"public_host"`
-	PublicPort   uint16                `json:"public_port"`
 	TCP          TCPSettings           `json:"tcp"`
 	Sockopt      *SocketSettings       `json:"sockopt,omitempty"`
 	Sniffing     Sniffing              `json:"sniffing"`
@@ -90,7 +90,6 @@ func Editable(value Configuration) EditableConfiguration {
 		services[index] = EditableService{
 			Type: service.Type, Enabled: service.Enabled, ServiceID: service.ServiceID,
 			DisplayName: service.DisplayName, Listen: service.Listen, Port: service.Port,
-			PublicHost: service.PublicHost, PublicPort: service.PublicPort,
 			TCP: cloneTCPSettings(service.TCP), Sockopt: cloneSocketSettings(service.Sockopt),
 			Sniffing:     cloneSniffing(service.Sniffing),
 			VLESSReality: editableVLESSReality(service.VLESSReality),
@@ -98,13 +97,17 @@ func Editable(value Configuration) EditableConfiguration {
 		}
 	}
 	return EditableConfiguration{
-		XrayVersion: value.XrayVersion, APIPort: value.APIPort, Services: services,
-		Routing: cloneRouting(value.Routing), DNS: cloneDNS(value.DNS),
+		XrayVersion: value.XrayVersion, APIPort: value.APIPort,
+		Services:  services,
+		Outbounds: cloneOutbounds(value.Outbounds),
+		Routing:   cloneRouting(value.Routing), DNS: cloneDNS(value.DNS),
 	}
 }
 
 func NewConfiguration(xrayVersion string, apiPort uint16, services []EditableService) (Configuration, error) {
-	return NewFromEditable(EditableConfiguration{XrayVersion: xrayVersion, APIPort: apiPort, Services: services})
+	return NewFromEditable(EditableConfiguration{
+		XrayVersion: xrayVersion, APIPort: apiPort, Services: services, Outbounds: DefaultOutbounds(),
+	})
 }
 
 func NewFromEditable(value EditableConfiguration) (Configuration, error) {
@@ -133,26 +136,33 @@ func MergeEditable(configuration Configuration, value EditableConfiguration) (Co
 		service.Enabled = editable.Enabled
 		service.ServiceID = editable.ServiceID
 		service.DisplayName = editable.DisplayName
-		service.Listen = editable.Listen
 		service.Port = editable.Port
-		publicHost, err := normalizePublicHost(editable.PublicHost)
-		if err != nil {
-			return Configuration{}, fmt.Errorf("services[%d].public_host: %w", index, err)
+		if editable.Type == ServiceTypeVLESSReality {
+			service.Listen = "0.0.0.0"
+			service.TCP = TCPSettings{
+				AcceptProxyProtocol: editable.TCP.AcceptProxyProtocol,
+				Header:              TCPHeader{Type: TCPHeaderNone},
+			}
+			service.Sockopt = nil
+			service.Sniffing = Sniffing{
+				Enabled: true, DestOverride: []string{"http", "tls", "quic"}, RouteOnly: true,
+			}
+		} else {
+			service.Listen = editable.Listen
+			if editable.TCP.Header.Type == "" {
+				editable.TCP.Header.Type = TCPHeaderNone
+			}
+			service.TCP = cloneTCPSettings(editable.TCP)
+			service.Sockopt = cloneSocketSettings(editable.Sockopt)
+			service.Sniffing = cloneSniffing(editable.Sniffing)
 		}
-		service.PublicHost = publicHost
-		service.PublicPort = editable.PublicPort
-		if editable.TCP.Header.Type == "" {
-			editable.TCP.Header.Type = TCPHeaderNone
-		}
-		service.TCP = cloneTCPSettings(editable.TCP)
-		service.Sockopt = cloneSocketSettings(editable.Sockopt)
-		service.Sniffing = cloneSniffing(editable.Sniffing)
 		services[index] = service
 	}
 	configuration.XrayVersion = value.XrayVersion
 	configuration.APIPort = value.APIPort
 	sort.Slice(services, func(i, j int) bool { return services[i].ServiceID < services[j].ServiceID })
 	configuration.Services = services
+	configuration.Outbounds = cloneOutbounds(value.Outbounds)
 	configuration.Routing = cloneRouting(value.Routing)
 	configuration.DNS = cloneDNS(value.DNS)
 	if err := Validate(configuration); err != nil {
@@ -213,8 +223,20 @@ func Validate(value Configuration) error {
 			return err
 		}
 		if service.Type == ServiceTypeVLESSReality {
+			if compareVersions(value.XrayVersion, MinimumVLESSXrayVersion) < 0 {
+				return fmt.Errorf("%s: VLESS REALITY requires Xray %s or newer", field, MinimumVLESSXrayVersion)
+			}
 			if err := validateTCPSettings(service.TCP, field+".tcp"); err != nil {
 				return err
+			}
+			if service.Sockopt != nil {
+				return fmt.Errorf("%s.sockopt: is not supported for VLESS REALITY", field)
+			}
+			if service.Listen != "0.0.0.0" {
+				return fmt.Errorf("%s.listen: VLESS REALITY must listen on all interfaces", field)
+			}
+			if !isManagedVLESSSniffing(service.Sniffing) {
+				return fmt.Errorf("%s.sniffing: VLESS REALITY sniffing is managed by the plugin", field)
 			}
 		}
 		if err := validateSocketSettings(service.Sockopt, field+".sockopt"); err != nil {
@@ -233,13 +255,41 @@ func Validate(value Configuration) error {
 			}
 		}
 	}
-	if err := validateRouting(value.Routing); err != nil {
+	if err := validateOutbounds(value.Outbounds); err != nil {
+		return err
+	}
+	if err := validateRouting(value.Routing, value.Services, value.Outbounds, value.XrayVersion); err != nil {
 		return err
 	}
 	if err := validateDNS(value.DNS); err != nil {
 		return err
 	}
 	return nil
+}
+
+func compareVersions(first, second string) int {
+	firstParts := strings.Split(first, ".")
+	secondParts := strings.Split(second, ".")
+	count := len(firstParts)
+	if len(secondParts) > count {
+		count = len(secondParts)
+	}
+	for index := 0; index < count; index++ {
+		var firstValue, secondValue uint64
+		if index < len(firstParts) {
+			firstValue, _ = strconv.ParseUint(firstParts[index], 10, 64)
+		}
+		if index < len(secondParts) {
+			secondValue, _ = strconv.ParseUint(secondParts[index], 10, 64)
+		}
+		if firstValue < secondValue {
+			return -1
+		}
+		if firstValue > secondValue {
+			return 1
+		}
+	}
+	return 0
 }
 
 func validateCommonService(apiPort uint16, service Service, field string) error {
@@ -250,15 +300,8 @@ func validateCommonService(apiPort uint16, service Service, field string) error 
 	if err != nil || listen.String() != service.Listen {
 		return fmt.Errorf("%s.listen: must be a canonical IP address", field)
 	}
-	if service.Port == 0 || service.PublicPort == 0 {
-		return fmt.Errorf("%s.port and public_port: must be between 1 and 65535", field)
-	}
-	publicHost, err := normalizePublicHost(service.PublicHost)
-	if err != nil {
-		return fmt.Errorf("%s.public_host: %w", field, err)
-	}
-	if publicHost != service.PublicHost {
-		return fmt.Errorf("%s.public_host: must use its canonical lowercase form", field)
+	if service.Port == 0 {
+		return fmt.Errorf("%s.port: must be between 1 and 65535", field)
 	}
 	if service.Port == apiPort && (listen.IsLoopback() || listen.IsUnspecified()) {
 		return fmt.Errorf("%s.port: conflicts with the local API port", field)
@@ -349,6 +392,7 @@ func clone(value Configuration) Configuration {
 		value.Services[index].Shadowsocks = cloneShadowsocks(value.Services[index].Shadowsocks)
 	}
 	value.Routing = cloneRouting(value.Routing)
+	value.Outbounds = cloneOutbounds(value.Outbounds)
 	value.DNS = cloneDNS(value.DNS)
 	return value
 }
@@ -380,22 +424,6 @@ func validateDisplayName(value string) error {
 		}
 	}
 	return nil
-}
-
-func normalizePublicHost(value string) (string, error) {
-	if value == "" || value != strings.TrimSpace(value) {
-		return "", fmt.Errorf("is required")
-	}
-	if address, err := netip.ParseAddr(value); err == nil {
-		if address.String() != value || address.IsUnspecified() {
-			return "", fmt.Errorf("must be a canonical IP other than an unspecified address")
-		}
-		return value, nil
-	}
-	if len(value) > 253 || !publicDomainPattern.MatchString(value) {
-		return "", fmt.Errorf("must be a domain or canonical IP without a port")
-	}
-	return strings.ToLower(value), nil
 }
 
 func requireEOF(decoder *json.Decoder) error {

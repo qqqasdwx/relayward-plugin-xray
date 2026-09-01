@@ -7,7 +7,28 @@ import type {
   RoutingRule,
   ServiceType,
   StoredConfiguration,
+  XrayOutbound,
 } from "@/types"
+
+export const VLESS_RANDOM_PORT_MIN = 20000
+export const VLESS_RANDOM_PORT_MAX = 29999
+
+export function randomVLESSPort(excludedPorts: number[], previousPort?: number): number {
+  const excluded = new Set(excludedPorts)
+  if (previousPort != null) excluded.add(previousPort)
+  const size = VLESS_RANDOM_PORT_MAX - VLESS_RANDOM_PORT_MIN + 1
+  if (excluded.size >= size) throw new Error("No VLESS listening port is available")
+  const random = new Uint32Array(1)
+  for (let attempt = 0; attempt < size * 2; attempt += 1) {
+    crypto.getRandomValues(random)
+    const candidate = VLESS_RANDOM_PORT_MIN + random[0]! % size
+    if (!excluded.has(candidate)) return candidate
+  }
+  for (let candidate = VLESS_RANDOM_PORT_MIN; candidate <= VLESS_RANDOM_PORT_MAX; candidate += 1) {
+    if (!excluded.has(candidate)) return candidate
+  }
+  throw new Error("No VLESS listening port is available")
+}
 
 export function cloneServices(values: ProxyService[]): ProxyService[] {
   return values.map((service) => ({
@@ -39,12 +60,6 @@ export function cloneServices(values: ProxyService[]): ProxyService[] {
     },
     vless_reality: service.vless_reality == null ? undefined : {
       ...service.vless_reality,
-      test_seed: [...service.vless_reality.test_seed],
-      fallbacks: service.vless_reality.fallbacks.map((fallback) => ({ ...fallback })),
-      server_names: [...service.vless_reality.server_names],
-      short_ids: [...service.vless_reality.short_ids],
-      limit_fallback_upload: service.vless_reality.limit_fallback_upload == null ? undefined : { ...service.vless_reality.limit_fallback_upload },
-      limit_fallback_download: service.vless_reality.limit_fallback_download == null ? undefined : { ...service.vless_reality.limit_fallback_download },
     },
     shadowsocks: service.shadowsocks == null ? undefined : { ...service.shadowsocks },
   }))
@@ -57,10 +72,68 @@ function cloneHeaders(values: Record<string, string[]>): Record<string, string[]
 export function cloneRoutingRules(values: RoutingRule[]): RoutingRule[] {
   return values.map((rule) => ({
     ...rule,
+    source_ips: [...rule.source_ips],
+    attributes: { ...rule.attributes },
+    destination_ips: [...rule.destination_ips],
     domains: [...rule.domains],
-    ip_cidrs: [...rule.ip_cidrs],
+    users: [...rule.users],
+    inbound_tags: [...rule.inbound_tags],
     protocols: [...rule.protocols],
   }))
+}
+
+export function cloneOutbounds(values: XrayOutbound[]): XrayOutbound[] {
+  return values.map((outbound) => ({
+    ...outbound,
+    freedom: outbound.freedom == null ? undefined : {
+      ...outbound.freedom,
+      fragment: outbound.freedom.fragment == null ? undefined : { ...outbound.freedom.fragment },
+      noises: outbound.freedom.noises.map((noise) => ({ ...noise })),
+      final_rules: outbound.freedom.final_rules.map((rule) => ({ ...rule, ips: [...rule.ips] })),
+    },
+    blackhole: outbound.blackhole == null ? undefined : { ...outbound.blackhole },
+  }))
+}
+
+export function defaultOutbounds(): XrayOutbound[] {
+  return [
+    {
+      tag: "direct",
+      protocol: "freedom",
+      freedom: {
+        domain_strategy: "AsIs",
+        redirect: "",
+        user_level: 0,
+        proxy_protocol: 0,
+        noises: [],
+        final_rules: [{ action: "allow", network: "", port: "", ips: [], block_delay: "" }],
+      },
+    },
+    { tag: "blocked", protocol: "blackhole", blackhole: { response_type: "" } },
+  ]
+}
+
+export function nextOutboundDefaults(outbounds: XrayOutbound[], protocol: XrayOutbound["protocol"] = "freedom"): XrayOutbound {
+  const prefix = protocol === "freedom" ? "freedom" : "blackhole"
+  let suffix = 1
+  let tag = prefix
+  while (outbounds.some((outbound) => outbound.tag === tag)) {
+    suffix += 1
+    tag = `${prefix}-${suffix}`
+  }
+  if (protocol === "blackhole") return { tag, protocol, blackhole: { response_type: "" } }
+  return {
+    tag,
+    protocol,
+    freedom: {
+      domain_strategy: "AsIs",
+      redirect: "",
+      user_level: 0,
+      proxy_protocol: 0,
+      noises: [],
+      final_rules: [{ action: "allow", network: "", port: "", ips: [], block_delay: "" }],
+    },
+  }
 }
 
 export function cloneDNSConfiguration(value: DNSConfiguration): DNSConfiguration {
@@ -87,7 +160,7 @@ export function defaultDNSConfiguration(locale: Locale): DNSConfiguration {
   }
 }
 
-export function nextServiceDefaults(services: ProxyService[], serviceTypes: ServiceType[], preferredType?: string): ProxyService {
+export function nextServiceDefaults(services: ProxyService[], serviceTypes: ServiceType[], preferredType?: string, reservedPorts: number[] = []): ProxyService {
   const serviceType = preferredType ?? serviceTypes[0]?.id ?? "vless-reality"
   const shadowsocks = serviceType === "shadowsocks"
   const idPrefix = shadowsocks ? "shadowsocks" : "vless-reality"
@@ -97,7 +170,7 @@ export function nextServiceDefaults(services: ProxyService[], serviceTypes: Serv
     suffix += 1
     serviceID = `${idPrefix}-${suffix}`
   }
-  let port = shadowsocks ? 8388 : services.length === 0 ? 443 : 8443
+  let port = shadowsocks ? 8388 : randomVLESSPort([...services.map((service) => service.port), ...reservedPorts])
   while (services.some((service) => service.port === port) && port < 65535) port += 1
   const common: ProxyService = {
     type: serviceType,
@@ -106,8 +179,6 @@ export function nextServiceDefaults(services: ProxyService[], serviceTypes: Serv
     display_name: shadowsocks ? "Shadowsocks" : services.length === 0 ? "VLESS Reality" : `VLESS Reality ${services.length + 1}`,
     listen: "0.0.0.0",
     port,
-    public_host: "edge.example.com",
-    public_port: port,
     tcp: {
       accept_proxy_protocol: false,
       header: { type: "none" },
@@ -135,32 +206,21 @@ export function nextServiceDefaults(services: ProxyService[], serviceTypes: Serv
   }
   return {
     ...common,
+    sniffing: {
+      enabled: true,
+      dest_override: ["http", "tls", "quic"],
+      metadata_only: false,
+      route_only: true,
+      ips_excluded: [],
+      domains_excluded: [],
+    },
     vless_reality: {
-      decryption: "none",
-      encryption: "none",
-      test_seed: [],
-      fallbacks: [],
-      show: false,
-      xver: 0,
-      target: "addons.mozilla.org:443",
-      server_names: ["addons.mozilla.org"],
-      private_key: "",
-      public_key: "",
-      short_ids: [],
-      min_client_version: "1.0.0",
-      max_client_version: "",
-      max_time_diff: 0,
-      mldsa65_seed: "",
-      mldsa65_verify: "",
-      master_key_log: "",
-      flow: "xtls-rprx-vision",
-      fingerprint: "chrome",
-      spider_x: "/",
+      target: "www.tesla.com:443",
     },
   }
 }
 
-export function nextRoutingRuleDefaults(rules: RoutingRule[], locale: Locale): RoutingRule {
+export function nextRoutingRuleDefaults(rules: RoutingRule[]): RoutingRule {
   let suffix = rules.length + 1
   let ruleID = `routing-rule-${suffix}`
   while (rules.some((rule) => rule.rule_id === ruleID)) {
@@ -169,12 +229,20 @@ export function nextRoutingRuleDefaults(rules: RoutingRule[], locale: Locale): R
   }
   return {
     rule_id: ruleID,
-    display_name: locale === "zh-CN" ? `路由规则 ${suffix}` : `Routing rule ${suffix}`,
+    display_name: "",
     enabled: true,
-    domains: [],
-    ip_cidrs: [],
+    source_ips: [],
+    source_port: "",
+    vless_route: "",
+    network: "",
     protocols: [],
-    action: "blocked",
+    attributes: {},
+    destination_ips: [],
+    domains: [],
+    users: [],
+    destination_port: "",
+    inbound_tags: [],
+    outbound_tag: "blocked",
   }
 }
 
@@ -202,9 +270,10 @@ export function configurationFromStored(
 ): EditableConfiguration {
   if (!stored.exists || stored.configuration == null) {
     return {
-      xray_version: "26.3.27",
+      xray_version: "26.7.28",
       api_port: 10085,
       services: [],
+      outbounds: defaultOutbounds(),
       routing: { rules: [] },
       dns: defaultDNSConfiguration(locale),
     }
@@ -217,6 +286,7 @@ export function configurationFromStored(
     xray_version: value.xray_version,
     api_port: value.api_port,
     services: cloneServices(Array.isArray(value.services) ? value.services : []),
+    outbounds: cloneOutbounds(Array.isArray(value.outbounds) ? value.outbounds : []),
     routing: { rules: cloneRoutingRules(Array.isArray(value.routing?.rules) ? value.routing.rules : []) },
     dns,
   }
@@ -227,6 +297,7 @@ export function configurationForSave(value: EditableConfiguration): EditableConf
     xray_version: value.xray_version.trim(),
     api_port: value.api_port,
     services: cloneServices(value.services).sort((first, second) => first.service_id.localeCompare(second.service_id)),
+    outbounds: cloneOutbounds(value.outbounds),
     routing: { rules: cloneRoutingRules(value.routing.rules) },
     dns: cloneDNSConfiguration(value.dns),
   }
@@ -242,6 +313,7 @@ export interface NamedChanges {
 export interface ConfigurationChanges {
   runtime: Array<"xray_version" | "api_port">
   services: NamedChanges
+  outbounds: NamedChanges
   routing: NamedChanges
   dns: Array<"enabled" | "query_strategy">
   dnsServers: NamedChanges
@@ -260,6 +332,7 @@ export function configurationChanges(before: EditableConfiguration, after: Edita
       ...(previous.api_port === current.api_port ? [] : ["api_port" as const]),
     ],
     services: namedChanges(previous.services, current.services, (value) => value.service_id, (value) => value.display_name),
+    outbounds: namedChanges(previous.outbounds, current.outbounds, (value) => value.tag, (value) => value.tag),
     routing: namedChanges(previous.routing.rules, current.routing.rules, (value) => value.rule_id, (value) => value.display_name),
     dns: [
       ...(previous.dns.enabled === current.dns.enabled ? [] : ["enabled" as const]),

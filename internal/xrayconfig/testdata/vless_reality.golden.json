@@ -1,0 +1,156 @@
+{
+  "api": {
+    "services": [
+      "HandlerService",
+      "RoutingService",
+      "StatsService"
+    ],
+    "tag": "relayward-api"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      },
+      "tag": "relayward-api"
+    },
+    {
+      "listen": "0.0.0.0",
+      "port": 54321,
+      "protocol": "vless",
+      "settings": {
+        "decryption": "none"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true,
+        "routeOnly": true
+      },
+      "streamSettings": {
+        "method": "raw",
+        "rawSettings": {
+          "acceptProxyProtocol": true
+        },
+        "realitySettings": {
+          "limitFallbackDownload": {
+            "afterBytes": 10485760,
+            "burstBytesPerSec": 5242880,
+            "bytesPerSec": 1048576
+          },
+          "limitFallbackUpload": {
+            "afterBytes": 10485760,
+            "burstBytesPerSec": 5242880,
+            "bytesPerSec": 1048576
+          },
+          "minClientVer": "1.0.0",
+          "privateKey": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+          "serverNames": [
+            "addons.mozilla.org"
+          ],
+          "shortIds": [
+            "0011223344556677"
+          ],
+          "target": "127.0.0.1:50451",
+          "xver": 2
+        },
+        "security": "reality"
+      },
+      "tag": "vless-main"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 50451,
+      "protocol": "tunnel",
+      "settings": {
+        "allowedNetwork": "tcp",
+        "rewriteAddress": "addons.mozilla.org",
+        "rewritePort": 443
+      },
+      "sniffing": {
+        "destOverride": [
+          "tls"
+        ],
+        "enabled": true,
+        "routeOnly": true
+      },
+      "streamSettings": {
+        "method": "raw",
+        "rawSettings": {
+          "acceptProxyProtocol": true
+        },
+        "security": "none"
+      },
+      "tag": "relayward/internal/reality-tunnel/vless-main"
+    }
+  ],
+  "log": {
+    "loglevel": "warning"
+  },
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "AsIs",
+        "finalRules": [
+          {
+            "action": "allow"
+          }
+        ]
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {},
+      "tag": "blocked"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserDownlink": true,
+        "statsUserOnline": true,
+        "statsUserUplink": true
+      }
+    }
+  },
+  "routing": {
+    "rules": [
+      {
+        "inboundTag": [
+          "relayward-api"
+        ],
+        "outboundTag": "relayward-api",
+        "ruleTag": "relayward-api",
+        "type": "field"
+      },
+      {
+        "domain": [
+          "full:addons.mozilla.org"
+        ],
+        "inboundTag": [
+          "relayward/internal/reality-tunnel/vless-main"
+        ],
+        "outboundTag": "direct",
+        "ruleTag": "relayward/internal/reality-sni-allow/vless-main",
+        "type": "field"
+      },
+      {
+        "inboundTag": [
+          "relayward/internal/reality-tunnel/vless-main"
+        ],
+        "outboundTag": "blocked",
+        "ruleTag": "relayward/internal/reality-sni-block/vless-main",
+        "type": "field"
+      }
+    ]
+  },
+  "stats": {}
+}

@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,32 @@ func (runtime *fakeRuntime) Apply(_ context.Context, generation uint64, digest s
 	runtime.applied = configuration
 	runtime.status = xrayruntime.Status{Generation: generation, ConfigurationSHA256: digest, Healthy: true}
 	return nil
+}
+
+func TestServerReportsListenerStatus(t *testing.T) {
+	t.Parallel()
+	runtime := &fakeRuntime{status: xrayruntime.Status{
+		Generation: 1, ConfigurationSHA256: strings.Repeat("a", 64), Healthy: true,
+		Listeners: []xrayruntime.ListenerStatus{{
+			ServiceID: testServiceID, Network: "tcp", ListenAddress: "0.0.0.0", Port: 443,
+			State: xrayruntime.ListenerListening,
+		}},
+	}}
+	server := New("0.1.0", runtime)
+	info, err := server.GetInfo(t.Context(), &nodepluginv1.GetInfoRequest{})
+	if err != nil || !slices.Contains(info.Capabilities, nodepluginv1.CapabilityListenerStatus) {
+		t.Fatalf("GetInfo() = %+v, %v", info, err)
+	}
+	response, err := server.GetStatus(t.Context(), &nodepluginv1.GetStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodepluginv1.ValidateStatusResponse(response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Listeners) != 1 || response.Listeners[0].State != nodepluginv1.ListenerState_LISTENER_STATE_LISTENING {
+		t.Fatalf("GetStatus() = %+v", response)
+	}
 }
 func (runtime *fakeRuntime) GetStatus() xrayruntime.Status { return runtime.status }
 func (runtime *fakeRuntime) ApplyServiceState(_ context.Context, _, _ uint64, authorizationID, serviceID string, enabled bool) error {
@@ -88,7 +116,7 @@ func TestServerAppliesConfiguration(t *testing.T) {
 	if err := nodepluginv1.ValidateStatusResponse(result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Health != nodepluginv1.Health_HEALTH_HEALTHY || runtime.applied.XrayVersion != "26.3.27" {
+	if result.Health != nodepluginv1.Health_HEALTH_HEALTHY || runtime.applied.XrayVersion != "26.7.28" {
 		t.Fatalf("GetStatus() = %+v, applied = %+v", result, runtime.applied)
 	}
 }
@@ -169,12 +197,10 @@ func TestServerRejectsUnknownConfigurationField(t *testing.T) {
 
 func testConfigurationJSON(t *testing.T) []byte {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
-		Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
-		VLESSReality: &config.EditableVLESSReality{
-			Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-		},
+		Listen: "0.0.0.0", Port: 443,
+		VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 	}})
 	if err != nil {
 		t.Fatal(err)

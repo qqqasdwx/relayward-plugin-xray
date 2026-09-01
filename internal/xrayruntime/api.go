@@ -595,7 +595,11 @@ func marshalRoutingRules(version string, rules []xrayconfig.CompiledRoutingRule)
 	}
 	values := make([]*routingRule, len(rules))
 	for index, rule := range rules {
-		values[index] = newLegacyRoutingRule(rule)
+		value, err := newLegacyRoutingRule(rule)
+		if err != nil {
+			return nil, err
+		}
+		values[index] = value
 	}
 	return marshalLegacy(&routerConfig{Rules: values})
 }
@@ -622,49 +626,111 @@ func usesGeodataRoutingRules(version string) bool {
 	return true
 }
 
-func newLegacyRoutingRule(rule xrayconfig.CompiledRoutingRule) *routingRule {
+func newLegacyRoutingRule(rule xrayconfig.CompiledRoutingRule) (*routingRule, error) {
 	value := &routingRule{
 		Tag: rule.OutboundTag, RuleTag: rule.RuleTag,
 		UserEmail: append([]string(nil), rule.UserEmails...), InboundTag: append([]string(nil), rule.InboundTags...),
-		Protocol: append([]string(nil), rule.Protocols...),
+		Protocol: append([]string(nil), rule.Protocols...), Networks: routingNetworks(rule.Networks),
+		PortList: routingPortList(rule.DestinationPorts), SourcePortList: routingPortList(rule.SourcePorts),
+		VLESSRouteList: routingPortList(rule.VLESSRoutes), Attributes: cloneRoutingAttributes(rule.Attributes),
 	}
 	for _, domain := range rule.Domains {
-		value.Domain = append(value.Domain, &routingDomain{Type: 2, Value: domain})
+		if domain.GeoFile != "" {
+			return nil, fmt.Errorf("geosite routing requires Xray 26.7.11 or newer")
+		}
+		value.Domain = append(value.Domain, &routingDomain{Type: int32(domain.Type), Value: domain.Value})
 	}
-	value.GeoIP = legacyGeoIPs(rule.DestinationCIDRs)
-	value.SourceGeoIP = legacyGeoIPs(rule.SourceCIDRs)
-	return value
+	var err error
+	if value.GeoIP, err = legacyGeoIPs(rule.DestinationIPs); err != nil {
+		return nil, err
+	}
+	if value.SourceGeoIP, err = legacyGeoIPs(rule.SourceIPs); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 func newGeodataRoutingRule(rule xrayconfig.CompiledRoutingRule) *geodataRoutingRule {
 	value := &geodataRoutingRule{
 		Tag: rule.OutboundTag, RuleTag: rule.RuleTag,
 		UserEmail: append([]string(nil), rule.UserEmails...), InboundTag: append([]string(nil), rule.InboundTags...),
-		Protocol: append([]string(nil), rule.Protocols...),
+		Protocol: append([]string(nil), rule.Protocols...), Networks: routingNetworks(rule.Networks),
+		PortList: routingPortList(rule.DestinationPorts), SourcePortList: routingPortList(rule.SourcePorts),
+		VLESSRouteList: routingPortList(rule.VLESSRoutes), Attributes: cloneRoutingAttributes(rule.Attributes),
 	}
 	for _, domain := range rule.Domains {
-		value.Domain = append(value.Domain, &domainRule{Custom: &routingDomain{Type: 2, Value: domain}})
+		if domain.GeoFile != "" {
+			value.Domain = append(value.Domain, &domainRule{Geosite: &geoSiteRule{
+				File: domain.GeoFile, Code: domain.GeoCode, Attrs: domain.GeoAttrs,
+			}})
+		} else {
+			value.Domain = append(value.Domain, &domainRule{Custom: &routingDomain{Type: int32(domain.Type), Value: domain.Value}})
+		}
 	}
-	value.IP = geodataIPRules(rule.DestinationCIDRs)
-	value.SourceIP = geodataIPRules(rule.SourceCIDRs)
+	value.IP = geodataIPRules(rule.DestinationIPs)
+	value.SourceIP = geodataIPRules(rule.SourceIPs)
 	return value
 }
 
-func legacyGeoIPs(prefixes []netip.Prefix) []*geoIP {
-	if len(prefixes) == 0 {
-		return nil
+func legacyGeoIPs(rules []config.RoutingIPExpression) ([]*geoIP, error) {
+	if len(rules) == 0 {
+		return nil, nil
 	}
-	value := &geoIP{CIDR: make([]*cidr, len(prefixes))}
-	for index, prefix := range prefixes {
-		value.CIDR[index] = routingCIDR(prefix)
+	values := make([]*geoIP, len(rules))
+	for index, rule := range rules {
+		if rule.GeoFile != "" {
+			return nil, fmt.Errorf("geoip routing requires Xray 26.7.11 or newer")
+		}
+		values[index] = &geoIP{CIDR: []*cidr{routingCIDR(rule.Prefix)}, Reverse: rule.Reverse}
 	}
-	return []*geoIP{value}
+	return values, nil
 }
 
-func geodataIPRules(prefixes []netip.Prefix) []*ipRule {
-	values := make([]*ipRule, len(prefixes))
-	for index, prefix := range prefixes {
-		values[index] = &ipRule{Custom: &cidrRule{CIDR: routingCIDR(prefix)}}
+func geodataIPRules(rules []config.RoutingIPExpression) []*ipRule {
+	values := make([]*ipRule, len(rules))
+	for index, rule := range rules {
+		if rule.GeoFile != "" {
+			values[index] = &ipRule{GeoIP: &geoIPRule{
+				File: rule.GeoFile, Code: rule.GeoCode, Reverse: rule.Reverse,
+			}}
+		} else {
+			values[index] = &ipRule{Custom: &cidrRule{CIDR: routingCIDR(rule.Prefix), Reverse: rule.Reverse}}
+		}
+	}
+	return values
+}
+
+func routingPortList(ranges []config.RoutingPortRange) *portList {
+	if len(ranges) == 0 {
+		return nil
+	}
+	value := &portList{Ranges: make([]*portRange, len(ranges))}
+	for index, item := range ranges {
+		value.Ranges[index] = &portRange{From: uint32(item.From), To: uint32(item.To)}
+	}
+	return value
+}
+
+func routingNetworks(networks []string) []int32 {
+	values := make([]int32, 0, len(networks))
+	for _, network := range networks {
+		switch network {
+		case "tcp":
+			values = append(values, 2)
+		case "udp":
+			values = append(values, 3)
+		}
+	}
+	return values
+}
+
+func cloneRoutingAttributes(attributes map[string]string) map[string]string {
+	if len(attributes) == 0 {
+		return nil
+	}
+	values := make(map[string]string, len(attributes))
+	for key, value := range attributes {
+		values[key] = value
 	}
 	return values
 }
@@ -747,14 +813,19 @@ type routerConfig struct {
 }
 
 type routingRule struct {
-	Tag         string           `protobuf:"bytes,1,opt,name=tag,proto3"`
-	Domain      []*routingDomain `protobuf:"bytes,2,rep,name=domain,proto3"`
-	UserEmail   []string         `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
-	InboundTag  []string         `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
-	Protocol    []string         `protobuf:"bytes,9,rep,name=protocol,proto3"`
-	GeoIP       []*geoIP         `protobuf:"bytes,10,rep,name=geoip,proto3"`
-	SourceGeoIP []*geoIP         `protobuf:"bytes,11,rep,name=source_geoip,json=sourceGeoip,proto3"`
-	RuleTag     string           `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+	Tag            string            `protobuf:"bytes,1,opt,name=tag,proto3"`
+	Domain         []*routingDomain  `protobuf:"bytes,2,rep,name=domain,proto3"`
+	UserEmail      []string          `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
+	InboundTag     []string          `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
+	Protocol       []string          `protobuf:"bytes,9,rep,name=protocol,proto3"`
+	GeoIP          []*geoIP          `protobuf:"bytes,10,rep,name=geoip,proto3"`
+	SourceGeoIP    []*geoIP          `protobuf:"bytes,11,rep,name=source_geoip,json=sourceGeoip,proto3"`
+	Networks       []int32           `protobuf:"varint,13,rep,packed,name=networks,proto3"`
+	PortList       *portList         `protobuf:"bytes,14,opt,name=port_list,json=portList,proto3"`
+	Attributes     map[string]string `protobuf:"bytes,15,rep,name=attributes,proto3" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	SourcePortList *portList         `protobuf:"bytes,16,opt,name=source_port_list,json=sourcePortList,proto3"`
+	RuleTag        string            `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+	VLESSRouteList *portList         `protobuf:"bytes,20,opt,name=vless_route_list,json=vlessRouteList,proto3"`
 }
 
 type geodataRouterConfig struct {
@@ -762,14 +833,19 @@ type geodataRouterConfig struct {
 }
 
 type geodataRoutingRule struct {
-	Tag        string        `protobuf:"bytes,1,opt,name=tag,proto3"`
-	Domain     []*domainRule `protobuf:"bytes,2,rep,name=domain,proto3"`
-	UserEmail  []string      `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
-	InboundTag []string      `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
-	Protocol   []string      `protobuf:"bytes,9,rep,name=protocol,proto3"`
-	IP         []*ipRule     `protobuf:"bytes,10,rep,name=ip,proto3"`
-	SourceIP   []*ipRule     `protobuf:"bytes,11,rep,name=source_ip,json=sourceIp,proto3"`
-	RuleTag    string        `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+	Tag            string            `protobuf:"bytes,1,opt,name=tag,proto3"`
+	Domain         []*domainRule     `protobuf:"bytes,2,rep,name=domain,proto3"`
+	UserEmail      []string          `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
+	InboundTag     []string          `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
+	Protocol       []string          `protobuf:"bytes,9,rep,name=protocol,proto3"`
+	IP             []*ipRule         `protobuf:"bytes,10,rep,name=ip,proto3"`
+	SourceIP       []*ipRule         `protobuf:"bytes,11,rep,name=source_ip,json=sourceIp,proto3"`
+	Networks       []int32           `protobuf:"varint,13,rep,packed,name=networks,proto3"`
+	PortList       *portList         `protobuf:"bytes,14,opt,name=port_list,json=portList,proto3"`
+	Attributes     map[string]string `protobuf:"bytes,15,rep,name=attributes,proto3" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	SourcePortList *portList         `protobuf:"bytes,16,opt,name=source_port_list,json=sourcePortList,proto3"`
+	RuleTag        string            `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+	VLESSRouteList *portList         `protobuf:"bytes,20,opt,name=vless_route_list,json=vlessRouteList,proto3"`
 }
 
 type routingDomain struct {
@@ -778,15 +854,39 @@ type routingDomain struct {
 }
 
 type domainRule struct {
-	Custom *routingDomain `protobuf:"bytes,2,opt,name=custom,proto3"`
+	Geosite *geoSiteRule   `protobuf:"bytes,1,opt,name=geosite,proto3"`
+	Custom  *routingDomain `protobuf:"bytes,2,opt,name=custom,proto3"`
 }
 
 type ipRule struct {
-	Custom *cidrRule `protobuf:"bytes,2,opt,name=custom,proto3"`
+	GeoIP  *geoIPRule `protobuf:"bytes,1,opt,name=geoip,proto3"`
+	Custom *cidrRule  `protobuf:"bytes,2,opt,name=custom,proto3"`
 }
 
 type cidrRule struct {
-	CIDR *cidr `protobuf:"bytes,1,opt,name=cidr,proto3"`
+	CIDR    *cidr `protobuf:"bytes,1,opt,name=cidr,proto3"`
+	Reverse bool  `protobuf:"varint,2,opt,name=reverse_match,json=reverseMatch,proto3"`
+}
+
+type geoSiteRule struct {
+	File  string `protobuf:"bytes,1,opt,name=file,proto3"`
+	Code  string `protobuf:"bytes,2,opt,name=code,proto3"`
+	Attrs string `protobuf:"bytes,3,opt,name=attrs,proto3"`
+}
+
+type geoIPRule struct {
+	File    string `protobuf:"bytes,1,opt,name=file,proto3"`
+	Code    string `protobuf:"bytes,2,opt,name=code,proto3"`
+	Reverse bool   `protobuf:"varint,3,opt,name=reverse_match,json=reverseMatch,proto3"`
+}
+
+type portList struct {
+	Ranges []*portRange `protobuf:"bytes,1,rep,name=range,proto3"`
+}
+
+type portRange struct {
+	From uint32 `protobuf:"varint,1,opt,name=From,proto3"`
+	To   uint32 `protobuf:"varint,2,opt,name=To,proto3"`
 }
 
 type geoIP struct {
@@ -872,6 +972,18 @@ func (*ipRule) ProtoMessage()                        {}
 func (value *cidrRule) Reset()                       { *value = cidrRule{} }
 func (*cidrRule) String() string                     { return "" }
 func (*cidrRule) ProtoMessage()                      {}
+func (value *geoSiteRule) Reset()                    { *value = geoSiteRule{} }
+func (*geoSiteRule) String() string                  { return "" }
+func (*geoSiteRule) ProtoMessage()                   {}
+func (value *geoIPRule) Reset()                      { *value = geoIPRule{} }
+func (*geoIPRule) String() string                    { return "" }
+func (*geoIPRule) ProtoMessage()                     {}
+func (value *portList) Reset()                       { *value = portList{} }
+func (*portList) String() string                     { return "" }
+func (*portList) ProtoMessage()                      {}
+func (value *portRange) Reset()                      { *value = portRange{} }
+func (*portRange) String() string                    { return "" }
+func (*portRange) ProtoMessage()                     {}
 func (value *geoIP) Reset()                          { *value = geoIP{} }
 func (*geoIP) String() string                        { return "" }
 func (*geoIP) ProtoMessage()                         {}

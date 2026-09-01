@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { Activity, Globe2, Network, RefreshCw, Route, Save } from "lucide-react"
+import { Activity, Globe2, Network, RefreshCw, Route, Save, Send } from "lucide-react"
 
 import { DNSPanel } from "@/components/DNSPanel"
 import { DNSServerDialog } from "@/components/DNSServerDialog"
+import { OutboundDialog } from "@/components/OutboundDialog"
+import { OutboundsPanel } from "@/components/OutboundsPanel"
 import { RoutingPanel } from "@/components/RoutingPanel"
 import { RoutingRuleDialog } from "@/components/RoutingRuleDialog"
 import { RuntimePanel } from "@/components/RuntimePanel"
@@ -18,6 +20,7 @@ import {
   configurationsEqual,
   moveItem,
   nextDNSServerDefaults,
+  nextOutboundDefaults,
   nextRoutingRuleDefaults,
   nextServiceDefaults,
   type ConfigurationChanges,
@@ -32,8 +35,10 @@ import type {
   Locale,
   ProxyService,
   RoutingRule,
+  ServicePortDiagnostic,
   ServiceType,
   StoredConfiguration,
+  XrayOutbound,
 } from "@/types"
 
 interface DialogState<T> {
@@ -47,10 +52,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
-}
-
-function isNumberArray(value: unknown): value is number[] {
-  return Array.isArray(value) && value.every((item) => Number.isInteger(item))
 }
 
 function isStringArrayRecord(value: unknown): value is Record<string, string[]> {
@@ -85,22 +86,12 @@ function isSocketSettings(value: unknown): boolean {
     typeof value.v6_only === "boolean" && Array.isArray(value.custom) && value.custom.every(isCustomSockopt)
 }
 
-function isFallback(value: unknown): boolean {
-  return isRecord(value) && typeof value.name === "string" && typeof value.alpn === "string" &&
-    typeof value.path === "string" && typeof value.dest === "string" && Number.isInteger(value.xver)
-}
-
-function isLimitFallback(value: unknown): boolean {
-  return isRecord(value) && Number.isInteger(value.after_bytes) && Number.isInteger(value.bytes_per_sec) &&
-    Number.isInteger(value.burst_bytes_per_sec)
-}
-
 function isService(value: unknown): value is ProxyService {
   if (!isRecord(value) || !isRecord(value.tcp) || !isRecord(value.tcp.header) || !isRecord(value.sniffing)) return false
   if (value.sockopt != null && !isSocketSettings(value.sockopt)) return false
   const common = typeof value.type === "string" && typeof value.enabled === "boolean" &&
     typeof value.service_id === "string" && typeof value.display_name === "string" &&
-    typeof value.listen === "string" && Number.isInteger(value.port) && typeof value.public_host === "string" && Number.isInteger(value.public_port) &&
+    typeof value.listen === "string" && Number.isInteger(value.port) &&
     typeof value.tcp.accept_proxy_protocol === "boolean" && isTCPHeader(value.tcp.header) &&
     typeof value.sniffing.enabled === "boolean" && isStringArray(value.sniffing.dest_override) &&
     typeof value.sniffing.metadata_only === "boolean" && typeof value.sniffing.route_only === "boolean" &&
@@ -113,25 +104,48 @@ function isService(value: unknown): value is ProxyService {
       typeof value.shadowsocks.server_key === "string" && typeof value.shadowsocks.iv_check === "boolean"
   }
   if (value.type !== "vless-reality" || !isRecord(value.vless_reality) || value.shadowsocks != null) return false
-  if (value.vless_reality.limit_fallback_upload != null && !isLimitFallback(value.vless_reality.limit_fallback_upload)) return false
-  if (value.vless_reality.limit_fallback_download != null && !isLimitFallback(value.vless_reality.limit_fallback_download)) return false
-  return typeof value.vless_reality.show === "boolean" && Number.isInteger(value.vless_reality.xver) &&
-    typeof value.vless_reality.decryption === "string" && typeof value.vless_reality.encryption === "string" &&
-    isNumberArray(value.vless_reality.test_seed) && Array.isArray(value.vless_reality.fallbacks) && value.vless_reality.fallbacks.every(isFallback) &&
-    typeof value.vless_reality.target === "string" && isStringArray(value.vless_reality.server_names) &&
-    typeof value.vless_reality.private_key === "string" && typeof value.vless_reality.public_key === "string" && isStringArray(value.vless_reality.short_ids) &&
-    typeof value.vless_reality.min_client_version === "string" && typeof value.vless_reality.max_client_version === "string" &&
-    Number.isInteger(value.vless_reality.max_time_diff) && typeof value.vless_reality.flow === "string" &&
-    typeof value.vless_reality.mldsa65_seed === "string" && typeof value.vless_reality.mldsa65_verify === "string" &&
-    typeof value.vless_reality.master_key_log === "string" &&
-    typeof value.vless_reality.fingerprint === "string" && typeof value.vless_reality.spider_x === "string"
+  return typeof value.vless_reality.target === "string"
 }
 
 function isRoutingRule(value: unknown): value is RoutingRule {
   if (!isRecord(value)) return false
   return typeof value.rule_id === "string" && typeof value.display_name === "string" &&
-    typeof value.enabled === "boolean" && isStringArray(value.domains) && isStringArray(value.ip_cidrs) &&
-    isStringArray(value.protocols) && (value.action === "blocked" || value.action === "direct")
+    typeof value.enabled === "boolean" && isStringArray(value.source_ips) && typeof value.source_port === "string" &&
+    typeof value.vless_route === "string" && ["", "tcp", "udp", "tcp,udp"].includes(String(value.network)) &&
+    isStringArray(value.protocols) && isRecord(value.attributes) && Object.values(value.attributes).every((item) => typeof item === "string") &&
+    isStringArray(value.destination_ips) && isStringArray(value.domains) && isStringArray(value.users) &&
+    typeof value.destination_port === "string" && isStringArray(value.inbound_tags) && typeof value.outbound_tag === "string"
+}
+
+function isFreedomFragment(value: unknown): boolean {
+  return isRecord(value) && typeof value.packets === "string" && typeof value.length === "string" &&
+    typeof value.interval === "string" && typeof value.max_split === "string"
+}
+
+function isFreedomNoise(value: unknown): boolean {
+  return isRecord(value) && ["rand", "str", "base64", "hex"].includes(String(value.type)) &&
+    typeof value.packet === "string" && typeof value.delay === "string" && ["ip", "ipv4", "ipv6"].includes(String(value.apply_to))
+}
+
+function isFreedomFinalRule(value: unknown): boolean {
+  return isRecord(value) && ["allow", "block"].includes(String(value.action)) &&
+    ["", "tcp", "udp", "tcp,udp"].includes(String(value.network)) && typeof value.port === "string" &&
+    isStringArray(value.ips) && typeof value.block_delay === "string"
+}
+
+function isOutbound(value: unknown): value is XrayOutbound {
+  if (!isRecord(value) || typeof value.tag !== "string") return false
+  if (value.protocol === "freedom") {
+    if (!isRecord(value.freedom) || value.blackhole != null) return false
+    return ["", "AsIs", "UseIP", "UseIPv4", "UseIPv6", "UseIPv6v4", "UseIPv4v6", "ForceIP", "ForceIPv6v4", "ForceIPv6", "ForceIPv4v6", "ForceIPv4"].includes(String(value.freedom.domain_strategy)) &&
+      typeof value.freedom.redirect === "string" && Number.isInteger(value.freedom.user_level) &&
+      [0, 1, 2].includes(Number(value.freedom.proxy_protocol)) &&
+      (value.freedom.fragment == null || isFreedomFragment(value.freedom.fragment)) &&
+      Array.isArray(value.freedom.noises) && value.freedom.noises.every(isFreedomNoise) &&
+      Array.isArray(value.freedom.final_rules) && value.freedom.final_rules.every(isFreedomFinalRule)
+  }
+  return value.protocol === "blackhole" && value.freedom == null && isRecord(value.blackhole) &&
+    ["", "none", "http"].includes(String(value.blackhole.response_type))
 }
 
 function isDNSServer(value: unknown): value is DNSServer {
@@ -145,6 +159,7 @@ function isConfiguration(value: unknown): value is EditableConfiguration {
   if (!isRecord(value) || !isRecord(value.routing) || !isRecord(value.dns)) return false
   return typeof value.xray_version === "string" && Number.isInteger(value.api_port) &&
     Array.isArray(value.services) && value.services.every(isService) &&
+    Array.isArray(value.outbounds) && value.outbounds.every(isOutbound) &&
     Array.isArray(value.routing.rules) && value.routing.rules.every(isRoutingRule) &&
     typeof value.dns.enabled === "boolean" && ["use-ip", "use-ipv4", "use-ipv6"].includes(String(value.dns.query_strategy)) &&
     Array.isArray(value.dns.servers) && value.dns.servers.every(isDNSServer)
@@ -178,6 +193,32 @@ function parseStored(response: unknown): StoredConfiguration {
   }
 }
 
+function parseDiagnostics(response: unknown): ServicePortDiagnostic[] {
+  if (!isRecord(response) || !Array.isArray(response.diagnostics)) {
+    throw new Error("Relayward returned invalid network diagnostics")
+  }
+  return response.diagnostics.map((value) => {
+    if (!isRecord(value) || typeof value.service_id !== "string" ||
+      (value.network !== "tcp" && value.network !== "udp") || !Number.isInteger(value.local_port) ||
+      typeof value.listen_address !== "string" ||
+      !["unknown", "listening", "not_listening"].includes(String(value.local_state)) ||
+      typeof value.local_observed_at_unix_nano !== "number" || !Array.isArray(value.endpoints)) {
+      throw new Error("Relayward returned invalid network diagnostics")
+    }
+    const endpoints = value.endpoints.map((endpoint) => {
+      if (!isRecord(endpoint) || typeof endpoint.endpoint_id !== "string" || typeof endpoint.display_name !== "string" ||
+        !["direct", "nat", "domain", "managed_ddns"].includes(String(endpoint.kind)) ||
+        typeof endpoint.address !== "string" || !Number.isInteger(endpoint.port) ||
+        !["reachable", "unreachable", "not_tested"].includes(String(endpoint.reachability)) ||
+        !["", "node_offline", "local_not_listening", "endpoint_unavailable", "proxied_endpoint", "unsupported_network", "dns_failed", "connection_refused", "timeout", "network_unreachable"].includes(String(endpoint.reason))) {
+        throw new Error("Relayward returned invalid network diagnostics")
+      }
+      return endpoint as unknown as ServicePortDiagnostic["endpoints"][number]
+    })
+    return { ...value, endpoints } as unknown as ServicePortDiagnostic
+  })
+}
+
 function errorMessage(cause: unknown, fallback: string) {
   return cause instanceof Error && cause.message ? cause.message : fallback
 }
@@ -185,17 +226,22 @@ function errorMessage(cause: unknown, fallback: string) {
 export function App() {
   const clientRef = useRef<RelaywardUIClient | null>(null)
   const formRef = useRef<HTMLFormElement | null>(null)
+  const diagnosticsRequestRef = useRef(0)
   const [locale, setLocale] = useState<Locale>("en")
   const [serviceTypes, setServiceTypes] = useState<ServiceType[]>([])
   const [nodeID, setNodeID] = useState("")
   const [stored, setStored] = useState<StoredConfiguration | null>(null)
   const [baseline, setBaseline] = useState<EditableConfiguration | null>(null)
   const [draft, setDraft] = useState<EditableConfiguration | null>(null)
+  const [diagnostics, setDiagnostics] = useState<ServicePortDiagnostic[]>([])
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
+  const [diagnosticsFailed, setDiagnosticsFailed] = useState(false)
   const [busy, setBusy] = useState(true)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState("")
   const [error, setError] = useState("")
   const [serviceDialog, setServiceDialog] = useState<DialogState<ProxyService> | null>(null)
+  const [outboundDialog, setOutboundDialog] = useState<DialogState<XrayOutbound> | null>(null)
   const [routingDialog, setRoutingDialog] = useState<DialogState<RoutingRule> | null>(null)
   const [dnsDialog, setDNSDialog] = useState<DialogState<DNSServer> | null>(null)
   const t = useMemo(() => translator(locale), [locale])
@@ -203,6 +249,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false
     let client: RelaywardUIClient | null = null
+    const diagnosticRequests = diagnosticsRequestRef
     let bootstrapLocale: Locale = "en"
     async function bootstrap() {
       try {
@@ -226,6 +273,7 @@ export function App() {
         setStored(loaded)
         setBaseline(configurationForSave(initial))
         setDraft(initial)
+        void loadDiagnostics(client, scopedNodeID, loaded.exists)
       } catch (cause) {
         if (!cancelled) setError(errorMessage(cause, translator(bootstrapLocale)("The request could not be completed.")))
       } finally {
@@ -235,6 +283,7 @@ export function App() {
     void bootstrap()
     return () => {
       cancelled = true
+      diagnosticRequests.current++
       client?.dispose()
       if (clientRef.current === client) clientRef.current = null
     }
@@ -244,6 +293,28 @@ export function App() {
     setDraft(value)
     setNotice("")
     setError("")
+  }
+
+  async function loadDiagnostics(client: RelaywardUIClient, targetNodeID: string, configured: boolean) {
+    const requestID = ++diagnosticsRequestRef.current
+    setDiagnosticsBusy(true)
+    setDiagnosticsFailed(false)
+    if (!configured) {
+      setDiagnostics([])
+      setDiagnosticsBusy(false)
+      return
+    }
+    try {
+      const loaded = parseDiagnostics(await client.rpc("diagnostics.get", { node_id: targetNodeID }))
+      if (diagnosticsRequestRef.current === requestID) setDiagnostics(loaded)
+    } catch {
+      if (diagnosticsRequestRef.current === requestID) {
+        setDiagnostics([])
+        setDiagnosticsFailed(true)
+      }
+    } finally {
+      if (diagnosticsRequestRef.current === requestID) setDiagnosticsBusy(false)
+    }
   }
 
   async function refreshConfiguration() {
@@ -258,6 +329,7 @@ export function App() {
       setStored(loaded)
       setBaseline(configurationForSave(refreshed))
       setDraft(refreshed)
+      void loadDiagnostics(client, nodeID, loaded.exists)
     } catch (cause) {
       setError(errorMessage(cause, t("The request could not be completed.")))
     } finally {
@@ -305,6 +377,7 @@ export function App() {
       setStored(loaded)
       setBaseline(configurationForSave(saved))
       setDraft(saved)
+      void loadDiagnostics(client, nodeID, loaded.exists)
       setNotice(t("Configuration saved."))
     } catch (cause) {
       setError(errorMessage(cause, t("The request could not be completed.")))
@@ -316,7 +389,7 @@ export function App() {
   function openNewService() {
     if (draft == null) return
     if (draft.services.length >= 64) { setError(t("A node can contain at most 64 inbounds.")); return }
-    setServiceDialog({ initial: nextServiceDefaults(draft.services, serviceTypes), editingID: null })
+    setServiceDialog({ initial: nextServiceDefaults(draft.services, serviceTypes, undefined, [draft.api_port]), editingID: null })
   }
 
   function applyService(inbound: ProxyService) {
@@ -331,13 +404,49 @@ export function App() {
 
   async function deleteService(inbound: ProxyService) {
     if (draft == null || !await confirmDelete(t("Delete inbound"), t("Delete {name}? The change is published only after you save the configuration.", { name: inbound.display_name }))) return
-    markChanged({ ...draft, services: draft.services.filter((candidate) => candidate.service_id !== inbound.service_id) })
+    markChanged({
+      ...draft,
+      services: draft.services.filter((candidate) => candidate.service_id !== inbound.service_id),
+    })
+  }
+
+  function openNewOutbound() {
+    if (draft == null) return
+    if (draft.outbounds.length >= 64) { setError(t("A node can contain at most 64 outbounds.")); return }
+    setOutboundDialog({ initial: nextOutboundDefaults(draft.outbounds), editingID: null })
+  }
+
+  function applyOutbound(outbound: XrayOutbound) {
+    if (draft == null || outboundDialog == null) return
+    const previousTag = outboundDialog.editingID
+    const outbounds = previousTag == null
+      ? [...draft.outbounds, outbound]
+      : draft.outbounds.map((candidate) => candidate.tag === previousTag ? outbound : candidate)
+    const rules = previousTag == null || previousTag === outbound.tag
+      ? draft.routing.rules
+      : draft.routing.rules.map((rule) => rule.outbound_tag === previousTag ? { ...rule, outbound_tag: outbound.tag } : rule)
+    markChanged({ ...draft, outbounds, routing: { rules } })
+    setOutboundDialog(null)
+  }
+
+  async function deleteOutbound(outbound: XrayOutbound) {
+    if (draft == null) return
+    const affected = draft.routing.rules.filter((rule) => rule.outbound_tag === outbound.tag)
+    const message = affected.length === 0
+      ? t("Delete outbound {tag}? The change is published only after you save the configuration.", { tag: outbound.tag })
+      : t("Delete outbound {tag} and {count} routing rules that use it?", { tag: outbound.tag, count: affected.length })
+    if (!await confirmDelete(t("Delete outbound"), message)) return
+    markChanged({
+      ...draft,
+      outbounds: draft.outbounds.filter((candidate) => candidate.tag !== outbound.tag),
+      routing: { rules: draft.routing.rules.filter((rule) => rule.outbound_tag !== outbound.tag) },
+    })
   }
 
   function openNewRoutingRule() {
     if (draft == null) return
     if (draft.routing.rules.length >= 128) { setError(t("A node can contain at most 128 routing rules.")); return }
-    setRoutingDialog({ initial: nextRoutingRuleDefaults(draft.routing.rules, locale), editingID: null })
+    setRoutingDialog({ initial: nextRoutingRuleDefaults(draft.routing.rules), editingID: null })
   }
 
   function applyRoutingRule(rule: RoutingRule) {
@@ -400,10 +509,13 @@ export function App() {
           <Tabs defaultValue="services" orientation="vertical" className="min-w-0 gap-4 md:grid md:grid-cols-[11rem_minmax(0,1fr)] md:items-start md:gap-6">
             <PluginTabNavigation t={t} />
             <ConfigurationTab value="services" actions={actions}>
-              <ServicesPanel services={draft.services} busy={interactionBusy} t={t} onAdd={openNewService} onEdit={(service) => setServiceDialog({ initial: service, editingID: service.service_id })} onDelete={(service) => void deleteService(service)} />
+              <ServicesPanel services={draft.services} diagnostics={diagnostics} diagnosticsBusy={diagnosticsBusy} diagnosticsFailed={diagnosticsFailed} busy={interactionBusy} t={t} onAdd={openNewService} onEdit={(service) => setServiceDialog({ initial: service, editingID: service.service_id })} onDelete={(service) => void deleteService(service)} />
+            </ConfigurationTab>
+            <ConfigurationTab value="outbounds" actions={actions}>
+              <OutboundsPanel outbounds={draft.outbounds} busy={interactionBusy} t={t} onAdd={openNewOutbound} onEdit={(outbound) => setOutboundDialog({ initial: outbound, editingID: outbound.tag })} onDelete={(outbound) => void deleteOutbound(outbound)} onMove={(index, offset) => markChanged({ ...draft, outbounds: moveItem(draft.outbounds, index, offset) })} />
             </ConfigurationTab>
             <ConfigurationTab value="routing" actions={actions}>
-              <RoutingPanel rules={draft.routing.rules} busy={interactionBusy} t={t} onAdd={openNewRoutingRule} onEdit={(rule) => setRoutingDialog({ initial: rule, editingID: rule.rule_id })} onDelete={(rule) => void deleteRoutingRule(rule)} onMove={(index, offset) => markChanged({ ...draft, routing: { rules: moveItem(draft.routing.rules, index, offset) } })} />
+              <RoutingPanel services={draft.services} rules={draft.routing.rules} busy={interactionBusy} t={t} onAdd={openNewRoutingRule} onEdit={(rule) => setRoutingDialog({ initial: rule, editingID: rule.rule_id })} onDelete={(rule) => void deleteRoutingRule(rule)} onMove={(index, offset) => markChanged({ ...draft, routing: { rules: moveItem(draft.routing.rules, index, offset) } })} onToggle={(rule, enabled) => markChanged({ ...draft, routing: { rules: draft.routing.rules.map((candidate) => candidate.rule_id === rule.rule_id ? { ...candidate, enabled } : candidate) } })} />
             </ConfigurationTab>
             <ConfigurationTab value="dns" actions={actions}>
               <DNSPanel value={draft.dns} busy={interactionBusy} t={t} onChange={changeDNS} onAdd={openNewDNSServer} onEdit={(server) => setDNSDialog({ initial: server, editingID: server.server_id })} onDelete={(server) => void deleteDNSServer(server)} onMove={(index, offset) => changeDNS({ ...draft.dns, servers: moveItem(draft.dns.servers, index, offset) })} />
@@ -417,8 +529,9 @@ export function App() {
         <Card><CardContent className="grid min-h-40 place-content-center text-sm text-muted-foreground">{t("Loading...")}</CardContent></Card>
       ) : null}
 
-      {serviceDialog ? <ServiceDialog initial={serviceDialog.initial} editingID={serviceDialog.editingID} existingIDs={draft?.services.map((service) => service.service_id) ?? []} serviceTypes={serviceTypes} createService={(type) => nextServiceDefaults(draft?.services ?? [], serviceTypes, type)} t={t} onClose={() => setServiceDialog(null)} onApply={applyService} /> : null}
-      {routingDialog ? <RoutingRuleDialog initial={routingDialog.initial} editingID={routingDialog.editingID} existingIDs={draft?.routing.rules.map((rule) => rule.rule_id) ?? []} t={t} onClose={() => setRoutingDialog(null)} onApply={applyRoutingRule} /> : null}
+      {serviceDialog ? <ServiceDialog initial={serviceDialog.initial} editingID={serviceDialog.editingID} existingIDs={draft?.services.map((service) => service.service_id) ?? []} occupiedPorts={draft?.services.filter((service) => service.service_id !== serviceDialog.editingID).map((service) => service.port) ?? []} apiPort={draft?.api_port ?? 0} serviceTypes={serviceTypes} createService={(type) => nextServiceDefaults(draft?.services ?? [], serviceTypes, type, draft == null ? [] : [draft.api_port])} t={t} onClose={() => setServiceDialog(null)} onApply={applyService} /> : null}
+      {outboundDialog ? <OutboundDialog initial={outboundDialog.initial} editingTag={outboundDialog.editingID} outbounds={draft?.outbounds ?? []} t={t} onClose={() => setOutboundDialog(null)} onApply={applyOutbound} /> : null}
+      {routingDialog && draft ? <RoutingRuleDialog initial={routingDialog.initial} editingID={routingDialog.editingID} services={draft.services} outbounds={draft.outbounds} t={t} onClose={() => setRoutingDialog(null)} onApply={applyRoutingRule} /> : null}
       {dnsDialog ? <DNSServerDialog initial={dnsDialog.initial} editingID={dnsDialog.editingID} existingIDs={draft?.dns.servers.map((server) => server.server_id) ?? []} t={t} onClose={() => setDNSDialog(null)} onApply={applyDNSServer} /> : null}
     </main>
   )
@@ -467,6 +580,7 @@ function formatConfigurationChanges(changes: ConfigurationChanges, t: Translator
     lines.push(`• ${t("Runtime")}: ${fields.join(t(", "))}`)
   }
   appendNamedChanges(lines, t("Inbounds"), changes.services, t)
+  appendNamedChanges(lines, t("Outbounds"), changes.outbounds, t)
   appendNamedChanges(lines, t("Routing"), changes.routing, t)
   if (changes.dns.length > 0) {
     const fields = changes.dns.map((field) => t(field === "enabled" ? "Enabled status" : "Query strategy"))
@@ -497,6 +611,7 @@ function PluginTabNavigation({ t }: { t: Translator }) {
   return (
     <TabsList variant="sidebar" aria-label={t("Xray configuration")}>
       <TabsTrigger variant="sidebar" value="services"><Network />{t("Inbounds")}</TabsTrigger>
+      <TabsTrigger variant="sidebar" value="outbounds"><Send />{t("Outbounds")}</TabsTrigger>
       <TabsTrigger variant="sidebar" value="routing"><Route />{t("Routing")}</TabsTrigger>
       <TabsTrigger variant="sidebar" value="dns"><Globe2 />{t("DNS")}</TabsTrigger>
       <TabsTrigger variant="sidebar" value="runtime"><Activity />{t("Runtime")}</TabsTrigger>

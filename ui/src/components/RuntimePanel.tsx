@@ -18,7 +18,7 @@ export function RuntimePanel({ value, busy, t, onChange }: {
       <div className="grid min-w-0 gap-4 md:grid-cols-3">
         <div className="grid min-w-0 gap-2">
           <Label htmlFor="xray-version">{t("Xray version")}</Label>
-          <Input id="xray-version" inputMode="decimal" value={value.xray_version} placeholder="26.3.27" disabled={busy} required onChange={(event) => onChange({ ...value, xray_version: event.target.value })} />
+          <Input id="xray-version" inputMode="decimal" value={value.xray_version} placeholder="26.7.28" disabled={busy} required onChange={(event) => onChange({ ...value, xray_version: event.target.value })} />
         </div>
         <div className="grid min-w-0 gap-2">
           <Label htmlFor="api-port">{t("Local API port")}</Label>

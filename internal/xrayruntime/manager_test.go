@@ -160,7 +160,7 @@ func TestManagerRestoresPreviousProcessAfterCandidateStartupFailure(t *testing.T
 	t.Parallel()
 	manager := testManager(t)
 	manager.connectAPI = func(_ context.Context, configuration config.Configuration) (runtimeAPI, error) {
-		if configuration.Services[0].Listen == "127.0.0.2" {
+		if configuration.Services[0].VLESSReality.Target == "candidate.example.com:443" {
 			return nil, errors.New("candidate API unavailable")
 		}
 		return &fakeRuntimeAPI{}, nil
@@ -261,7 +261,7 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	configuration := testConfigurationValue(t, "0.0.0.0")
 	configuration.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{{
 		RuleID: "allow-example", DisplayName: "Allow example", Enabled: true,
-		Domains: []string{"example.com"}, Action: config.RoutingActionDirect,
+		Domains: []string{"domain:example.com"}, OutboundTag: config.RoutingOutboundDirect,
 	}}}
 	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
 		t.Fatal(err)
@@ -287,12 +287,12 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.replacements) != 1 || len(api.replacements[0]) != 3 ||
+	if len(api.replacements) != 1 || len(api.replacements[0]) != 5 ||
 		api.replacements[0][0].RuleTag != xrayconfig.APIRuleTag ||
-		api.replacements[0][1].UserEmails[0] != email ||
-		api.replacements[0][1].InboundTags[0] != testServiceID ||
-		api.replacements[0][1].SourceCIDRs[0].String() != "192.0.2.20/32" ||
-		api.replacements[0][2].RuleTag != "relayward-static-allow-example" {
+		api.replacements[0][3].UserEmails[0] != email ||
+		api.replacements[0][3].InboundTags[0] != testServiceID ||
+		api.replacements[0][3].SourceIPs[0].Prefix.String() != "192.0.2.20/32" ||
+		api.replacements[0][4].RuleTag != "relayward-static-allow-example" {
 		t.Fatalf("replacement = %+v", api.replacements)
 	}
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil || len(api.replacements) != 1 {
@@ -308,9 +308,9 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(restoredAPI.replacements) != 1 || len(restoredAPI.replacements[0]) != 3 ||
-		restoredAPI.replacements[0][1].SourceCIDRs[0].String() != "192.0.2.20/32" ||
-		restoredAPI.replacements[0][2].RuleTag != "relayward-static-allow-example" {
+	if len(restoredAPI.replacements) != 1 || len(restoredAPI.replacements[0]) != 5 ||
+		restoredAPI.replacements[0][3].SourceIPs[0].Prefix.String() != "192.0.2.20/32" ||
+		restoredAPI.replacements[0][4].RuleTag != "relayward-static-allow-example" {
 		t.Fatalf("restored replacement = %+v", restoredAPI.replacements)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -323,20 +323,16 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	t.Parallel()
 	manager := testManager(t)
-	configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
+	configuration, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 8443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	})
 	if err != nil {
@@ -392,7 +388,7 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 3 {
+	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 7 {
 		t.Fatalf("restored runtime = added %q, blocks %+v", restored.added, restored.replacements)
 	}
 	editable := config.Editable(configuration)
@@ -410,7 +406,7 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	mainState := manager.services[serviceKey(authorizationID, "reality-main")]
 	if backupState == nil || backupState.enabled || mainState == nil || !mainState.enabled ||
 		len(manager.blocks) != 1 || manager.blocks[0].ServiceID != "reality-main" || manager.blockRevision != 0 ||
-		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 2 {
+		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 4 {
 		t.Fatalf("state after service removal = backup %+v, main %+v, blocks %+v, runtime %+v", backupState, mainState, manager.blocks, removed)
 	}
 	if err := manager.ApplyServiceState(context.Background(), 4, 4, authorizationID, "reality-backup", false); err != nil {
@@ -437,14 +433,21 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	}
 }
 
-func testConfigurationValue(t *testing.T, listen string) config.Configuration {
+func testConfigurationValue(t *testing.T, scenario string) config.Configuration {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+	target := "www.microsoft.com:443"
+	switch scenario {
+	case "127.0.0.2":
+		target = "candidate.example.com:443"
+	case "127.0.0.3":
+		target = "invalid.example.com:443"
+	case "127.0.0.4":
+		target = "exit.example.com:443"
+	}
+	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
-		Listen: listen, Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
-		VLESSReality: &config.EditableVLESSReality{
-			Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-		},
+		Listen: "0.0.0.0", Port: 443,
+		VLESSReality: &config.EditableVLESSReality{Target: target},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -474,16 +477,16 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-if grep -q '"listen":"127.0.0.3"' "$config"; then
+if grep -q '"rewriteAddress":"invalid.example.com"' "$config"; then
   exit 1
 fi
 if [ "$test_mode" -eq 1 ]; then
   exit 0
 fi
-if [ "$test_mode" -eq 0 ] && grep -q '"listen":"127.0.0.2"' "$config"; then
+if [ "$test_mode" -eq 0 ] && grep -q '"rewriteAddress":"candidate.example.com"' "$config"; then
   exit 1
 fi
-if [ "$test_mode" -eq 0 ] && grep -q '"listen":"127.0.0.4"' "$config"; then
+if [ "$test_mode" -eq 0 ] && grep -q '"rewriteAddress":"exit.example.com"' "$config"; then
   exit 0
 fi
 trap 'exit 0' TERM INT
@@ -493,7 +496,7 @@ while :; do sleep 1; done
 		t.Fatal(err)
 	}
 	manager, err := NewManager(directory, fakeInstaller{installation: xrayrelease.Installation{
-		Version: "26.3.27", Binary: binary, AssetDir: directory,
+		Version: "26.7.28", Binary: binary, AssetDir: directory,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -501,6 +504,13 @@ while :; do sleep 1; done
 	manager.startupGrace = 50 * time.Millisecond
 	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) {
 		return &fakeRuntimeAPI{}, nil
+	}
+	manager.inspect = func(configuration config.Configuration) []ListenerStatus {
+		listeners := configuredListeners(configuration)
+		for index := range listeners {
+			listeners[index].State = ListenerListening
+		}
+		return listeners
 	}
 	return manager
 }

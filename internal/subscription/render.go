@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 
@@ -32,6 +34,9 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 	if err := config.Validate(configuration); err != nil {
 		return nil, errors.New("stored Xray configuration is invalid")
 	}
+	if len(request.Endpoints) == 0 {
+		return nil, errors.New("subscription has no available node endpoints")
+	}
 	response := &centerpluginv1.RenderSubscriptionResponse{
 		Services: make([]*centerpluginv1.SubscriptionServiceContribution, len(request.Services)),
 	}
@@ -43,10 +48,19 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 		if !service.Enabled {
 			return nil, errors.New("subscription requests a disabled Xray service")
 		}
-		contribution, err := renderService(configuration, service, binding, request.AuthorizationId)
-		if err != nil {
-			return nil, err
+		contribution := &centerpluginv1.SubscriptionServiceContribution{
+			ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
 		}
+		for _, endpoint := range request.Endpoints {
+			fragment, err := renderService(configuration, service, binding, request.AuthorizationId, endpoint)
+			if err != nil {
+				return nil, err
+			}
+			contribution.Uris = append(contribution.Uris, fragment.Uris...)
+			contribution.MihomoProxiesJson = append(contribution.MihomoProxiesJson, fragment.MihomoProxiesJson...)
+			contribution.SingBoxOutboundsJson = append(contribution.SingBoxOutboundsJson, fragment.SingBoxOutboundsJson...)
+		}
+		sort.Strings(contribution.Uris)
 		response.Services[index] = contribution
 	}
 	if err := centerpluginv1.ValidateRenderSubscriptionResponse(request, response); err != nil {
@@ -56,20 +70,20 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 }
 
 func renderService(configuration config.Configuration, service config.Service,
-	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string,
+	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string, endpoint *centerpluginv1.SubscriptionEndpoint,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
-		return renderVLESSReality(configuration, service, binding, authorizationID)
+		return renderVLESSReality(configuration, service, binding, authorizationID, endpoint)
 	case config.ServiceTypeShadowsocks:
-		return renderShadowsocks(configuration, service, binding, authorizationID)
+		return renderShadowsocks(configuration, service, binding, authorizationID, endpoint)
 	default:
 		return nil, errors.New("subscription requests an unsupported Xray service type")
 	}
 }
 
 func renderShadowsocks(configuration config.Configuration, service config.Service,
-	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string,
+	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string, endpoint *centerpluginv1.SubscriptionEndpoint,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	settings := service.Shadowsocks
 	userPassword, err := config.DeriveShadowsocksPassword(
@@ -79,12 +93,15 @@ func renderShadowsocks(configuration config.Configuration, service config.Servic
 		return nil, err
 	}
 	password := config.ShadowsocksClientPassword(*settings, userPassword)
+	host := endpoint.Address
+	port := effectivePublicPort(endpoint, service)
+	displayName := endpointDisplayName(binding.DisplayName, endpoint.DisplayName)
 	contribution := &centerpluginv1.SubscriptionServiceContribution{
-		ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
-		Uris: []string{shadowsocksURI(service.PublicHost, service.PublicPort, settings.Method, settings.ServerKey, userPassword, binding.DisplayName)},
+		ServiceId: binding.ServiceId, DisplayName: displayName,
+		Uris: []string{shadowsocksURI(host, port, settings.Method, settings.ServerKey, userPassword, displayName)},
 	}
 	mihomo, err := json.Marshal(map[string]any{
-		"name": binding.DisplayName, "type": "ss", "server": service.PublicHost, "port": service.PublicPort,
+		"name": displayName, "type": "ss", "server": host, "port": port,
 		"cipher": settings.Method, "password": password, "udp": settings.Network != config.ShadowsocksNetworkTCP,
 	})
 	if err != nil {
@@ -92,8 +109,8 @@ func renderShadowsocks(configuration config.Configuration, service config.Servic
 	}
 	contribution.MihomoProxiesJson = [][]byte{mihomo}
 	singBox, err := json.Marshal(map[string]any{
-		"type": "shadowsocks", "tag": binding.DisplayName, "server": service.PublicHost,
-		"server_port": service.PublicPort, "method": settings.Method, "password": password,
+		"type": "shadowsocks", "tag": displayName, "server": host,
+		"server_port": port, "method": settings.Method, "password": password,
 	})
 	if err != nil {
 		return nil, err
@@ -115,7 +132,7 @@ func shadowsocksURI(host string, port uint16, method, serverKey, userPassword, d
 }
 
 func renderVLESSReality(configuration config.Configuration, service config.Service,
-	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string,
+	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string, endpoint *centerpluginv1.SubscriptionEndpoint,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	reality := service.VLESSReality
 	publicKey, err := config.RealityPublicKey(reality.PrivateKey)
@@ -128,17 +145,20 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 	if err != nil {
 		return nil, err
 	}
-	uri := vlessURI(service.PublicHost, service.PublicPort, credential, binding.DisplayName, reality.Flow,
+	host := endpoint.Address
+	port := effectivePublicPort(endpoint, service)
+	displayName := endpointDisplayName(binding.DisplayName, endpoint.DisplayName)
+	uri := vlessURI(host, port, credential, displayName, reality.Flow,
 		reality.Fingerprint, serverName, publicKey, shortID, reality.SpiderX, reality.Encryption,
 		reality.MLDSA65Verify, service.TCP)
 	contribution := &centerpluginv1.SubscriptionServiceContribution{
-		ServiceId: binding.ServiceId, DisplayName: binding.DisplayName, Uris: []string{uri},
+		ServiceId: binding.ServiceId, DisplayName: displayName, Uris: []string{uri},
 	}
 	if service.TCP.Header.Type == config.TCPHeaderHTTP || reality.MLDSA65Verify != "" {
 		return contribution, nil
 	}
 	mihomoValue := map[string]any{
-		"name": binding.DisplayName, "type": "vless", "server": service.PublicHost, "port": service.PublicPort,
+		"name": displayName, "type": "vless", "server": host, "port": port,
 		"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": reality.Flow,
 		"servername": serverName, "client-fingerprint": reality.Fingerprint,
 		"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
@@ -158,7 +178,7 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 		return contribution, nil
 	}
 	singBoxValue := map[string]any{
-		"type": "vless", "tag": binding.DisplayName, "server": service.PublicHost, "server_port": service.PublicPort,
+		"type": "vless", "tag": displayName, "server": host, "server_port": port,
 		"uuid": credential, "flow": reality.Flow,
 		"tls": map[string]any{
 			"enabled": true, "server_name": serverName,
@@ -175,6 +195,29 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 	}
 	contribution.SingBoxOutboundsJson = [][]byte{singBox}
 	return contribution, nil
+}
+
+func effectivePublicPort(endpoint *centerpluginv1.SubscriptionEndpoint, service config.Service) uint16 {
+	if port, exists := endpoint.PublicPortOverrides[service.ServiceID]; exists {
+		return uint16(port)
+	}
+	return service.Port
+}
+
+func endpointDisplayName(serviceName, endpointName string) string {
+	value := serviceName + " / " + endpointName
+	if utf8.RuneCountInString(value) <= 100 {
+		return value
+	}
+	return truncateRunes(serviceName, 49) + " / " + truncateRunes(endpointName, 48)
+}
+
+func truncateRunes(value string, maximum int) string {
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	return string(runes[:maximum])
 }
 
 func vlessURI(host string, port uint16, credential, displayName, flow, fingerprint, serverName, publicKey, shortID, spiderX, encryption, mldsa65Verify string, tcp config.TCPSettings) string {

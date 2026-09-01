@@ -54,7 +54,7 @@ func NewInstaller(dataDirectory string, source Source) *Installer {
 
 func (installer *Installer) Ensure(ctx context.Context, version string) (Installation, error) {
 	if err := contract.ValidateSemanticVersion(version); err != nil || strings.ContainsAny(version, "-+") {
-		return Installation{}, errors.New("invalid stable Xray version")
+		return Installation{}, errors.New("invalid Xray version")
 	}
 	if installer.source == nil {
 		return Installation{}, errors.New("Xray release source is not configured")

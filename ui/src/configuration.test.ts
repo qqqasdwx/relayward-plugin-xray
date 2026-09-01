@@ -7,19 +7,23 @@ import {
   configurationFromStored,
   configurationsEqual,
   defaultDNSConfiguration,
+  defaultOutbounds,
   lines,
   moveItem,
   nextDNSServerDefaults,
+  nextOutboundDefaults,
   nextRoutingRuleDefaults,
   nextServiceDefaults,
+  randomVLESSPort,
 } from "@/configuration"
 import { compatibilityFor } from "@/inboundCompatibility"
 
 describe("configuration helpers", () => {
   it("creates an empty new-node configuration", () => {
     const value = configurationFromStored({ exists: false, node_id: "node-1" }, "zh-CN")
-    expect(value.xray_version).toBe("26.3.27")
+    expect(value.xray_version).toBe("26.7.28")
     expect(value.services).toEqual([])
+    expect(value.outbounds).toEqual(defaultOutbounds())
     expect(value.dns).toEqual(defaultDNSConfiguration("zh-CN"))
   })
 
@@ -27,13 +31,38 @@ describe("configuration helpers", () => {
     const service = nextServiceDefaults([], [])
     expect(service.service_id).toBe("vless-reality")
     expect(service.tcp.header.type).toBe("none")
-    expect(service.sniffing.dest_override).toEqual(["http", "tls", "quic", "fakedns"])
+    expect(service.port).toBeGreaterThanOrEqual(20000)
+    expect(service.port).toBeLessThanOrEqual(29999)
+    expect(service.vless_reality?.target).toBe("www.tesla.com:443")
+    expect(service.sniffing).toEqual({
+      enabled: true,
+      dest_override: ["http", "tls", "quic"],
+      metadata_only: false,
+      route_only: true,
+      ips_excluded: [],
+      domains_excluded: [],
+    })
     expect(nextServiceDefaults([service], []).service_id).toBe("vless-reality-2")
-    const rule = nextRoutingRuleDefaults([], "en")
-    expect(nextRoutingRuleDefaults([rule], "en").rule_id).toBe("routing-rule-2")
+    const rule = nextRoutingRuleDefaults([])
+    expect(nextRoutingRuleDefaults([rule]).rule_id).toBe("routing-rule-2")
     const server = nextDNSServerDefaults([], "en")
     expect(nextDNSServerDefaults([server], "en").server_id).toBe("dns-server-2")
     expect(moveItem(["first", "second"], 1, -1)).toEqual(["second", "first"])
+    expect(nextOutboundDefaults(defaultOutbounds()).tag).toBe("freedom")
+    expect(nextOutboundDefaults(defaultOutbounds(), "blackhole").tag).toBe("blackhole")
+  })
+
+  it("generates another VLESS port without reusing reserved or current ports", () => {
+    const first = randomVLESSPort([20000, 20001])
+    const second = randomVLESSPort([20000, 20001, first], first)
+
+    expect(first).toBeGreaterThanOrEqual(20000)
+    expect(first).toBeLessThanOrEqual(29999)
+    expect(second).toBeGreaterThanOrEqual(20000)
+    expect(second).toBeLessThanOrEqual(29999)
+    expect(second).not.toBe(first)
+    expect([20000, 20001]).not.toContain(first)
+    expect([20000, 20001]).not.toContain(second)
   })
 
   it("creates Shadowsocks defaults without VLESS-only settings", () => {
@@ -46,7 +75,6 @@ describe("configuration helpers", () => {
       service_id: "shadowsocks",
       display_name: "Shadowsocks",
       port: 8388,
-      public_port: 8388,
       shadowsocks: {
         method: "2022-blake3-aes-256-gcm",
         network: "tcp,udp",
@@ -71,10 +99,27 @@ describe("configuration helpers", () => {
   it("returns to a clean state when a value is changed and restored", () => {
     const baseline = configurationFromStored({ exists: false, node_id: "node-1" }, "en")
     const draft = configurationForSave(baseline)
-    draft.api_port = 20000
+    draft.xray_version = "26.4.1"
     expect(configurationsEqual(baseline, draft)).toBe(false)
-    draft.api_port = baseline.api_port
+    draft.xray_version = baseline.xray_version
     expect(configurationsEqual(baseline, draft)).toBe(true)
+  })
+
+  it("deep-clones outbound settings and reports outbound changes", () => {
+    const baseline = configurationFromStored({ exists: false, node_id: "node-1" }, "en")
+    const draft = configurationForSave(baseline)
+    if (draft.outbounds[0]?.freedom == null) throw new Error("expected direct freedom outbound")
+    draft.outbounds[0].freedom.domain_strategy = "UseIPv4"
+    draft.outbounds[0].freedom.final_rules[0]!.ips.push("geoip:private")
+
+    expect(baseline.outbounds[0]?.freedom?.domain_strategy).toBe("AsIs")
+    expect(baseline.outbounds[0]?.freedom?.final_rules[0]?.ips).toEqual([])
+    expect(configurationChanges(baseline, draft).outbounds).toEqual({
+      added: [],
+      updated: ["direct"],
+      removed: [],
+      reordered: false,
+    })
   })
 
   it("compares record keys independently of insertion order", () => {
@@ -98,8 +143,8 @@ describe("configuration helpers", () => {
     const firstService = nextServiceDefaults([], [])
     const removedService = { ...nextServiceDefaults([firstService], []), display_name: "Removed inbound" }
     baseline.services = [firstService, removedService]
-    const firstRule = nextRoutingRuleDefaults([], "en")
-    const secondRule = nextRoutingRuleDefaults([firstRule], "en")
+    const firstRule = nextRoutingRuleDefaults([])
+    const secondRule = nextRoutingRuleDefaults([firstRule])
     baseline.routing.rules = [firstRule, secondRule]
     const draft = configurationForSave(baseline)
     draft.xray_version = "26.4.1"
@@ -111,6 +156,7 @@ describe("configuration helpers", () => {
     expect(configurationChanges(baseline, draft)).toEqual({
       runtime: ["xray_version"],
       services: { added: ["Added inbound"], updated: ["Updated inbound"], removed: ["Removed inbound"], reordered: false },
+      outbounds: { added: [], updated: [], removed: [], reordered: false },
       routing: { added: [], updated: [], removed: [], reordered: true },
       dns: ["enabled"],
       dnsServers: { added: [], updated: ["System DNS"], removed: [], reordered: false },

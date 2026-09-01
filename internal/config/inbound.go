@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -176,6 +175,13 @@ func validateSniffing(value Sniffing, field string) error {
 	return nil
 }
 
+func isManagedVLESSSniffing(value Sniffing) bool {
+	return value.Enabled && value.RouteOnly && !value.MetadataOnly &&
+		len(value.DestOverride) == 3 && value.DestOverride[0] == "http" &&
+		value.DestOverride[1] == "tls" && value.DestOverride[2] == "quic" &&
+		len(value.IPsExcluded) == 0 && len(value.DomainsExcluded) == 0
+}
+
 func validateSocketSettings(value *SocketSettings, field string) error {
 	if value == nil {
 		return nil
@@ -222,64 +228,6 @@ func validateSocketSettings(value *SocketSettings, field string) error {
 				return fmt.Errorf("%s.custom[%d].value: must be a signed decimal integer for type int", field, index)
 			}
 		}
-	}
-	return nil
-}
-
-func validateVLESSFallbacks(values []VLESSFallback, field string) error {
-	for index, value := range values {
-		itemField := fmt.Sprintf("%s[%d]", field, index)
-		if value.Xver > 2 {
-			return fmt.Errorf("%s.xver: must be 0, 1, or 2", itemField)
-		}
-		if value.Path != "" && !strings.HasPrefix(value.Path, "/") {
-			return fmt.Errorf("%s.path: must be empty or start with /", itemField)
-		}
-		if strings.TrimSpace(value.Dest) == "" || strings.ContainsAny(value.Dest, "\r\n") {
-			return fmt.Errorf("%s.dest: is required", itemField)
-		}
-		if err := validateFallbackDestination(value.Dest); err != nil {
-			return fmt.Errorf("%s.dest: %w", itemField, err)
-		}
-		for name, entry := range map[string]string{"name": value.Name, "alpn": value.ALPN} {
-			if strings.ContainsAny(entry, "\r\n") {
-				return fmt.Errorf("%s.%s: must not contain newlines", itemField, name)
-			}
-		}
-	}
-	return nil
-}
-
-func validateFallbackDestination(value string) error {
-	if value != strings.TrimSpace(value) {
-		return fmt.Errorf("must not contain surrounding whitespace")
-	}
-	if value == "serve-ws-none" || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "@") {
-		return nil
-	}
-	if port, err := strconv.ParseUint(value, 10, 16); err == nil && port != 0 {
-		return nil
-	}
-	_, port, err := net.SplitHostPort(value)
-	if err != nil {
-		return fmt.Errorf("must be a port, host:port, or Unix socket")
-	}
-	parsedPort, err := strconv.ParseUint(port, 10, 16)
-	if err != nil || parsedPort == 0 {
-		return fmt.Errorf("must include a valid port")
-	}
-	return nil
-}
-
-func validateRealityLimitFallback(value *RealityLimitFallback, field string) error {
-	if value == nil {
-		return nil
-	}
-	if value.BytesPerSec == 0 && (value.AfterBytes != 0 || value.BurstBytesPerSec != 0) {
-		return fmt.Errorf("%s.bytes_per_sec: is required when a fallback limit is configured", field)
-	}
-	if value.BurstBytesPerSec != 0 && value.BurstBytesPerSec < value.BytesPerSec {
-		return fmt.Errorf("%s.burst_bytes_per_sec: must not be lower than bytes_per_sec", field)
 	}
 	return nil
 }

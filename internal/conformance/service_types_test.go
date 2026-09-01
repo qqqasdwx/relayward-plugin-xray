@@ -17,14 +17,12 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 	fixtures := map[string]config.EditableService{
 		config.ServiceTypeVLESSReality: {
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "127.0.0.1", Port: 8443, PublicHost: "edge.example.com", PublicPort: 8443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "addons.mozilla.org:443", ServerNames: []string{"addons.mozilla.org"}, Fingerprint: "chrome",
-			},
+			Listen: "127.0.0.1", Port: 8443,
+			VLESSReality: &config.EditableVLESSReality{Target: "addons.mozilla.org:443"},
 		},
 		config.ServiceTypeShadowsocks: {
 			Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
-			Listen: "127.0.0.1", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+			Listen: "127.0.0.1", Port: 8388,
 			Shadowsocks: &config.EditableShadowsocks{
 				Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
 			},
@@ -42,7 +40,7 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 			if !exists {
 				t.Fatal("registered service type has no conformance fixture")
 			}
-			configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{fixture})
+			configuration, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{fixture})
 			if err != nil {
 				t.Fatalf("build typed configuration: %v", err)
 			}
@@ -67,6 +65,9 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 				request := &centerpluginv1.RenderSubscriptionRequest{
 					AuthorizationId: "10000000-0000-4000-8000-000000000001",
 					NodeId:          "20000000-0000-4000-8000-000000000002",
+					Endpoints: []*centerpluginv1.SubscriptionEndpoint{{
+						EndpointId: "30000000-0000-4000-8000-000000000003", DisplayName: "Public", Kind: "nat", Address: "edge.example.com",
+					}},
 					Services: []*centerpluginv1.SubscriptionServiceBinding{{
 						ServiceId: fixture.ServiceID, DisplayName: fixture.DisplayName,
 					}},

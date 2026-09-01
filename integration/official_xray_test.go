@@ -25,29 +25,21 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	backupPort := freePort(t)
 	shadowsocks2022Port := freePort(t)
 	shadowsocksAEADPort := freePort(t)
-	configuration, err := config.NewConfiguration("26.3.27", apiPort, []config.EditableService{
+	configuration, err := config.NewConfiguration("26.7.28", apiPort, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "127.0.0.1", Port: mainPort, PublicHost: "edge.example.com", PublicPort: mainPort,
+			Listen: "127.0.0.1", Port: mainPort,
 			TCP: config.TCPSettings{Header: config.TCPHeader{Type: config.TCPHeaderNone}},
 			Sniffing: config.Sniffing{
 				Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"},
 				MetadataOnly: true, RouteOnly: true,
 				IPsExcluded: []string{"192.0.2.0/24"}, DomainsExcluded: []string{"domain:excluded.example"},
 			},
-			VLESSReality: &config.EditableVLESSReality{
-				Decryption: "none", Encryption: "none", TestSeed: []uint32{900, 500, 900, 256},
-				Fallbacks: []config.VLESSFallback{{Dest: strconv.Itoa(int(backupPort)), Xver: 0}},
-				Show:      true, Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"},
-				MinClientVersion: "1.0.0", MaxClientVersion: "26.3.27", MaxTimeDiff: 1000,
-				LimitFallbackUpload:   &config.RealityLimitFallback{AfterBytes: 1024, BytesPerSec: 2048, BurstBytesPerSec: 4096},
-				LimitFallbackDownload: &config.RealityLimitFallback{AfterBytes: 2048, BytesPerSec: 4096, BurstBytesPerSec: 8192},
-				Fingerprint:           "chrome", SpiderX: "/integration",
-			},
+			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "127.0.0.1", Port: backupPort, PublicHost: "backup.example.com", PublicPort: backupPort,
+			Listen: "127.0.0.1", Port: backupPort,
 			TCP: config.TCPSettings{Header: config.TCPHeader{
 				Type: config.TCPHeaderHTTP,
 				Request: &config.TCPHTTPRequest{
@@ -59,22 +51,18 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 					Headers: map[string][]string{"Content-Type": {"application/octet-stream"}},
 				},
 			}},
-			VLESSReality: &config.EditableVLESSReality{
-				Decryption: "none", Encryption: "none",
-				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"},
-				Fingerprint: "chrome", SpiderX: "/",
-			},
+			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-2022", DisplayName: "Shadowsocks 2022",
-			Listen: "127.0.0.1", Port: shadowsocks2022Port, PublicHost: "ss2022.example.com", PublicPort: shadowsocks2022Port,
+			Listen: "127.0.0.1", Port: shadowsocks2022Port,
 			Shadowsocks: &config.EditableShadowsocks{
 				Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
 			},
 		},
 		{
 			Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-aead", DisplayName: "Shadowsocks AEAD",
-			Listen: "127.0.0.1", Port: shadowsocksAEADPort, PublicHost: "ss.example.com", PublicPort: shadowsocksAEADPort,
+			Listen: "127.0.0.1", Port: shadowsocksAEADPort,
 			Shadowsocks: &config.EditableShadowsocks{
 				Method: config.ShadowsocksMethodChaCha20, Network: config.ShadowsocksNetworkTCPUDP, IVCheck: true,
 			},
@@ -83,14 +71,30 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	configuration.Outbounds = append(configuration.Outbounds,
+		config.Outbound{
+			Tag: "IPv4", Protocol: config.OutboundProtocolFreedom,
+			Freedom: &config.FreedomOutboundSettings{
+				DomainStrategy: "UseIPv4", Redirect: "127.0.0.1:1080", UserLevel: 1, ProxyProtocol: 2,
+				Fragment:   &config.FreedomFragment{Packets: "tlshello", Length: "100-200", Interval: "10-20", MaxSplit: "300-400"},
+				Noises:     []config.FreedomNoise{{Type: "rand", Packet: "10-20", Delay: "10-16", ApplyTo: "ipv4"}},
+				FinalRules: []config.FreedomFinalRule{{Action: "allow", IPs: []string{}}},
+			},
+		},
+		config.Outbound{Tag: "pt_blocked", Protocol: config.OutboundProtocolBlackhole, Blackhole: &config.BlackholeOutboundSettings{}},
+	)
 	configuration.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{
 		{
 			RuleID: "block-documentation", DisplayName: "Block documentation range", Enabled: true,
-			IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
+			SourceIPs: []string{"127.0.0.1"}, SourcePort: "1-65535", VLESSRoute: "443", Network: "tcp",
+			Attributes:     map[string]string{"user-agent": "integration.*"},
+			DestinationIPs: []string{"192.0.2.0/24", "geoip:private"}, DestinationPort: "443",
+			Users: []string{"relayward:integration"}, InboundTags: []string{"reality-main"},
+			OutboundTag: "pt_blocked",
 		},
 		{
 			RuleID: "allow-example-tls", DisplayName: "Allow example TLS", Enabled: true,
-			Domains: []string{"example.com"}, Protocols: []string{"tls"}, Action: config.RoutingActionDirect,
+			Domains: []string{"domain:example.com", "geosite:cn"}, Protocols: []string{"tls"}, OutboundTag: "IPv4",
 		},
 	}}
 	configuration.DNS = config.DNSConfiguration{

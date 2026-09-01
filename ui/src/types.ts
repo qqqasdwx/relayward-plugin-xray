@@ -7,28 +7,7 @@ export interface ServiceType {
 }
 
 export interface VLESSReality {
-  decryption: string
-  encryption: string
-  test_seed: number[]
-  fallbacks: VLESSFallback[]
-  show: boolean
-  xver: number
   target: string
-  server_names: string[]
-  private_key: string
-  public_key: string
-  short_ids: string[]
-  min_client_version: string
-  max_client_version: string
-  max_time_diff: number
-  mldsa65_seed: string
-  mldsa65_verify: string
-  master_key_log: string
-  limit_fallback_upload?: RealityLimitFallback
-  limit_fallback_download?: RealityLimitFallback
-  flow: string
-  fingerprint: string
-  spider_x: string
 }
 
 export type ShadowsocksMethod =
@@ -44,20 +23,6 @@ export interface ShadowsocksSettings {
   network: "tcp" | "udp" | "tcp,udp"
   server_key: string
   iv_check: boolean
-}
-
-export interface VLESSFallback {
-  name: string
-  alpn: string
-  path: string
-  dest: string
-  xver: number
-}
-
-export interface RealityLimitFallback {
-  after_bytes: number
-  bytes_per_sec: number
-  burst_bytes_per_sec: number
 }
 
 export interface TCPHeader {
@@ -124,8 +89,6 @@ export interface ProxyService {
   display_name: string
   listen: string
   port: number
-  public_host: string
-  public_port: number
   tcp: TCPSettings
   sockopt?: SocketSettings
   sniffing: Sniffing
@@ -133,17 +96,70 @@ export interface ProxyService {
   shadowsocks?: ShadowsocksSettings
 }
 
-export type RoutingAction = "blocked" | "direct"
 export type RoutingProtocol = "http" | "tls" | "quic" | "bittorrent"
+
+export type OutboundProtocol = "freedom" | "blackhole"
+export type OutboundDomainStrategy = "" | "AsIs" | "UseIP" | "UseIPv4" | "UseIPv6" | "UseIPv6v4" | "UseIPv4v6" | "ForceIP" | "ForceIPv6v4" | "ForceIPv6" | "ForceIPv4v6" | "ForceIPv4"
+
+export interface FreedomFragment {
+  packets: string
+  length: string
+  interval: string
+  max_split: string
+}
+
+export interface FreedomNoise {
+  type: "rand" | "str" | "base64" | "hex"
+  packet: string
+  delay: string
+  apply_to: "ip" | "ipv4" | "ipv6"
+}
+
+export interface FreedomFinalRule {
+  action: "allow" | "block"
+  network: "" | "tcp" | "udp" | "tcp,udp"
+  port: string
+  ips: string[]
+  block_delay: string
+}
+
+export interface FreedomOutboundSettings {
+  domain_strategy: OutboundDomainStrategy
+  redirect: string
+  user_level: number
+  proxy_protocol: 0 | 1 | 2
+  fragment?: FreedomFragment
+  noises: FreedomNoise[]
+  final_rules: FreedomFinalRule[]
+}
+
+export interface BlackholeOutboundSettings {
+  response_type: "" | "none" | "http"
+}
+
+export interface XrayOutbound {
+  tag: string
+  protocol: OutboundProtocol
+  freedom?: FreedomOutboundSettings
+  blackhole?: BlackholeOutboundSettings
+}
 
 export interface RoutingRule {
   rule_id: string
   display_name: string
   enabled: boolean
-  domains: string[]
-  ip_cidrs: string[]
+  source_ips: string[]
+  source_port: string
+  vless_route: string
+  network: "" | "tcp" | "udp" | "tcp,udp"
   protocols: RoutingProtocol[]
-  action: RoutingAction
+  attributes: Record<string, string>
+  destination_ips: string[]
+  domains: string[]
+  users: string[]
+  destination_port: string
+  inbound_tags: string[]
+  outbound_tag: string
 }
 
 export type DNSTransport = "system" | "udp" | "tcp" | "doh"
@@ -169,6 +185,7 @@ export interface EditableConfiguration {
   xray_version: string
   api_port: number
   services: ProxyService[]
+  outbounds: XrayOutbound[]
   routing: { rules: RoutingRule[] }
   dns: DNSConfiguration
 }
@@ -180,4 +197,38 @@ export interface StoredConfiguration {
   version?: string
   sha256?: string
   configuration?: EditableConfiguration
+}
+
+export type LocalListenerState = "unknown" | "listening" | "not_listening"
+export type PortReachability = "reachable" | "unreachable" | "not_tested"
+export type PortProbeReason =
+  | ""
+  | "node_offline"
+  | "local_not_listening"
+  | "endpoint_unavailable"
+  | "proxied_endpoint"
+  | "unsupported_network"
+  | "dns_failed"
+  | "connection_refused"
+  | "timeout"
+  | "network_unreachable"
+
+export interface EndpointPortDiagnostic {
+  endpoint_id: string
+  display_name: string
+  kind: "direct" | "nat" | "domain" | "managed_ddns"
+  address: string
+  port: number
+  reachability: PortReachability
+  reason: PortProbeReason
+}
+
+export interface ServicePortDiagnostic {
+  service_id: string
+  network: "tcp" | "udp"
+  local_port: number
+  listen_address: string
+  local_state: LocalListenerState
+  local_observed_at_unix_nano: number
+  endpoints: EndpointPortDiagnostic[]
 }

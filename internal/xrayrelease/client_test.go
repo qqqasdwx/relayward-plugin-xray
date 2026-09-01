@@ -21,7 +21,7 @@ func TestResolveAndDownload(t *testing.T) {
 		switch request.URL.Path {
 		case "/api/v26.3.27":
 			response.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(response, `{"tag_name":"v26.3.27","draft":false,"prerelease":false,"assets":[{"name":"%s","size":%d,"digest":"sha256:%s","browser_download_url":"%s/download/v26.3.27/%s"}]}`,
+			fmt.Fprintf(response, `{"tag_name":"v26.3.27","draft":false,"prerelease":true,"assets":[{"name":"%s","size":%d,"digest":"sha256:%s","browser_download_url":"%s/download/v26.3.27/%s"}]}`,
 				assetName, len(payload), hex.EncodeToString(digest[:]), server.URL, assetName)
 		case "/download/v26.3.27/" + assetName:
 			response.Write(payload)
@@ -47,9 +47,9 @@ func TestResolveAndDownload(t *testing.T) {
 func TestResolveRejectsUntrustedReleaseMetadata(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
-		"prerelease": `{"tag_name":"v26.3.27","prerelease":true,"assets":[]}`,
-		"wrong URL":  `{"tag_name":"v26.3.27","assets":[{"name":"Xray-linux-64.zip","size":12,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","browser_download_url":"https://example.com/Xray-linux-64.zip"}]}`,
-		"no digest":  `{"tag_name":"v26.3.27","assets":[{"name":"Xray-linux-64.zip","size":12,"browser_download_url":"https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip"}]}`,
+		"draft":     `{"tag_name":"v26.3.27","draft":true,"assets":[]}`,
+		"wrong URL": `{"tag_name":"v26.3.27","assets":[{"name":"Xray-linux-64.zip","size":12,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","browser_download_url":"https://example.com/Xray-linux-64.zip"}]}`,
+		"no digest": `{"tag_name":"v26.3.27","assets":[{"name":"Xray-linux-64.zip","size":12,"browser_download_url":"https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip"}]}`,
 	}
 	for name, body := range tests {
 		name, body := name, body

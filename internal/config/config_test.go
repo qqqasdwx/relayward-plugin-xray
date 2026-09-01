@@ -1,17 +1,15 @@
 package config
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, testEditableServices())
+	value, err := NewConfiguration("26.7.28", 10085, testEditableServices())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,8 +23,11 @@ func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if decoded.XrayVersion != "26.3.27" || len(decoded.Services) != 2 || decoded.Services[0].ServiceID != "reality-backup" ||
-		decoded.Services[1].ServiceID != "reality-main" || len(decoded.Routing.Rules) != 2 ||
+	if decoded.XrayVersion != "26.7.28" ||
+		len(decoded.Services) != 2 || decoded.Services[0].ServiceID != "reality-backup" ||
+		decoded.Services[1].ServiceID != "reality-main" || len(decoded.Outbounds) != 2 ||
+		decoded.Outbounds[0].Tag != OutboundTagDirect || decoded.Outbounds[0].Freedom == nil ||
+		decoded.Outbounds[1].Tag != OutboundTagBlocked || decoded.Outbounds[1].Blackhole == nil || len(decoded.Routing.Rules) != 2 ||
 		decoded.Routing.Rules[0].RuleID != "block-private" || !decoded.DNS.Enabled ||
 		len(decoded.DNS.Servers) != 2 || decoded.DNS.Servers[0].ServerID != "regional" {
 		t.Fatalf("configuration = %+v", decoded)
@@ -49,50 +50,14 @@ func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) 
 	}
 }
 
-func TestConfigurationRoundTripsCompleteInboundSettings(t *testing.T) {
+func TestConfigurationRoundTripsManagedVLESSSettings(t *testing.T) {
 	t.Parallel()
 	editable := testEditableServices()[:1]
 	service := &editable[0]
-	service.TCP = TCPSettings{
-		AcceptProxyProtocol: true,
-		Header: TCPHeader{Type: TCPHeaderHTTP,
-			Request: &TCPHTTPRequest{Version: "1.1", Method: "GET", Path: []string{"/edge"}, Headers: map[string][]string{
-				"Host": {"addons.mozilla.org"},
-			}},
-			Response: &TCPHTTPResponse{Version: "1.1", Status: "200", Reason: "OK", Headers: map[string][]string{
-				"Content-Type": {"text/html"},
-			}},
-		},
-	}
-	service.Sockopt = &SocketSettings{
-		Mark: 10, TCPFastOpen: true, TProxy: TProxyRedirect, AcceptProxyProtocol: true,
-		TCPMPTCP: true, TCPKeepAliveInterval: 15, TCPKeepAliveIdle: 300,
-		TCPMaxSeg: 1440, TCPUserTimeout: 10000, TCPWindowClamp: 600,
-		TCPCongestion: "cubic", V6Only: true,
-		Custom: []CustomSockopt{{System: "linux", Network: "tcp4", Level: "6", Opt: "19", Type: "int", Value: "1"}},
-	}
-	service.Sniffing = Sniffing{
-		Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"},
-		MetadataOnly: true, RouteOnly: true, IPsExcluded: []string{"geoip:private"},
-		DomainsExcluded: []string{"domain:example.com"},
-	}
-	service.VLESSReality.TestSeed = []uint32{900, 500, 900, 256}
-	service.VLESSReality.Fallbacks = []VLESSFallback{{Name: "fallback.example.com", ALPN: "http/1.1", Path: "/fallback", Dest: "127.0.0.1:8080", Xver: 1}}
-	service.VLESSReality.Show = true
-	service.VLESSReality.Xver = 1
-	service.VLESSReality.ServerNames = []string{"addons.mozilla.org", "www.mozilla.org"}
-	service.VLESSReality.MinClientVersion = "1.0.0"
-	service.VLESSReality.MaxClientVersion = "26.3.27"
-	service.VLESSReality.MaxTimeDiff = 1000
-	service.VLESSReality.MLDSA65Seed = base64.RawURLEncoding.EncodeToString(bytesOf(32, 1))
-	service.VLESSReality.MLDSA65Verify = base64.RawURLEncoding.EncodeToString(bytesOf(1952, 2))
-	service.VLESSReality.MasterKeyLog = "/tmp/relayward-xray.keys"
-	service.VLESSReality.LimitFallbackUpload = &RealityLimitFallback{AfterBytes: 1024, BytesPerSec: 2048, BurstBytesPerSec: 4096}
-	service.VLESSReality.LimitFallbackDownload = &RealityLimitFallback{AfterBytes: 2048, BytesPerSec: 4096, BurstBytesPerSec: 8192}
-	service.VLESSReality.Flow = ""
-	service.VLESSReality.SpiderX = "/spider"
+	service.Listen = "127.0.0.1"
+	service.TCP.AcceptProxyProtocol = true
 
-	value, err := NewConfiguration("26.3.27", 10085, editable)
+	value, err := NewConfiguration("26.7.28", 10085, editable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,13 +69,16 @@ func TestConfigurationRoundTripsCompleteInboundSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Editable(decoded).Services[0]
-	want := Editable(value).Services[0]
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("round-tripped inbound = %#v, want %#v", got, want)
-	}
-	if got.VLESSReality.Flow != "" {
-		t.Fatalf("empty flow changed to %q", got.VLESSReality.Flow)
+	got := decoded.Services[0]
+	if got.Listen != "0.0.0.0" || !got.TCP.AcceptProxyProtocol || got.TCP.Header.Type != TCPHeaderNone ||
+		got.Sockopt != nil || !isManagedVLESSSniffing(got.Sniffing) || got.VLESSReality.Decryption != "none" ||
+		got.VLESSReality.Encryption != "none" || got.VLESSReality.Xver != realityTunnelProxyProtocolVersion ||
+		got.VLESSReality.MinClientVersion != "1.0.0" ||
+		got.VLESSReality.Flow != VLESSVisionFlow || got.VLESSReality.Fingerprint != "chrome" ||
+		got.VLESSReality.SpiderX != "/" ||
+		len(got.VLESSReality.ServerNames) != 1 || got.VLESSReality.ServerNames[0] != "www.microsoft.com" ||
+		len(got.VLESSReality.ShortIDs) != 1 || len(got.VLESSReality.ShortIDs[0]) != 16 {
+		t.Fatalf("managed VLESS configuration = %+v", got)
 	}
 }
 
@@ -154,7 +122,7 @@ func TestShadowsocksConfigurationGeneratesStableIndependentCredentials(t *testin
 	standard := testEditableShadowsocks()
 	standard.Shadowsocks.Method = ShadowsocksMethodChaCha20
 	standard.Shadowsocks.ServerKey = "ignored"
-	standardValue, err := NewConfiguration("26.3.27", 10085, []EditableService{standard})
+	standardValue, err := NewConfiguration("26.7.28", 10085, []EditableService{standard})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +137,7 @@ func TestShadowsocksConfigurationGeneratesStableIndependentCredentials(t *testin
 
 func TestShadowsocksValidationRejectsUnsupportedSettings(t *testing.T) {
 	t.Parallel()
-	valid, err := NewConfiguration("26.3.27", 10085, []EditableService{testEditableShadowsocks()})
+	valid, err := NewConfiguration("26.7.28", 10085, []EditableService{testEditableShadowsocks()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,38 +160,24 @@ func TestShadowsocksValidationRejectsUnsupportedSettings(t *testing.T) {
 	}
 }
 
-func TestNewConfigurationNormalizesPublicHost(t *testing.T) {
-	t.Parallel()
-	services := testEditableServices()[:1]
-	services[0].PublicHost = "EDGE.EXAMPLE.COM"
-	value, err := NewConfiguration("26.3.27", 10085, services)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if value.Services[0].PublicHost != "edge.example.com" {
-		t.Fatalf("public host = %q", value.Services[0].PublicHost)
-	}
-}
-
 func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, testEditableServices())
+	value, err := NewConfiguration("26.7.28", 10085, testEditableServices())
 	if err != nil {
 		t.Fatal(err)
 	}
 	value.Routing = testRoutingConfiguration()
 	valid, _ := Encode(value)
 	tests := map[string]func(*Configuration){
-		"missing version":       func(value *Configuration) { value.XrayVersion = "" },
-		"leading v":             func(value *Configuration) { value.XrayVersion = "v26.3.27" },
-		"pre-release":           func(value *Configuration) { value.XrayVersion = "26.3.27-rc.1" },
-		"privileged API":        func(value *Configuration) { value.APIPort = 80 },
-		"invalid seed":          func(value *Configuration) { value.CredentialSeed = "secret" },
-		"unsupported type":      func(value *Configuration) { value.Services[0].Type = "trojan" },
-		"invalid service ID":    func(value *Configuration) { value.Services[0].ServiceID = "Invalid ID" },
-		"missing public host":   func(value *Configuration) { value.Services[0].PublicHost = "" },
-		"public host with port": func(value *Configuration) { value.Services[0].PublicHost = "edge.example.com:443" },
-		"duplicate service ID":  func(value *Configuration) { value.Services[1].ServiceID = value.Services[0].ServiceID },
+		"missing version":      func(value *Configuration) { value.XrayVersion = "" },
+		"leading v":            func(value *Configuration) { value.XrayVersion = "v26.7.28" },
+		"pre-release":          func(value *Configuration) { value.XrayVersion = "26.7.28-rc.1" },
+		"old VLESS version":    func(value *Configuration) { value.XrayVersion = "26.3.27" },
+		"privileged API":       func(value *Configuration) { value.APIPort = 80 },
+		"invalid seed":         func(value *Configuration) { value.CredentialSeed = "secret" },
+		"unsupported type":     func(value *Configuration) { value.Services[0].Type = "trojan" },
+		"invalid service ID":   func(value *Configuration) { value.Services[0].ServiceID = "Invalid ID" },
+		"duplicate service ID": func(value *Configuration) { value.Services[1].ServiceID = value.Services[0].ServiceID },
 		"unsorted services": func(value *Configuration) {
 			value.Services[0], value.Services[1] = value.Services[1], value.Services[0]
 		},
@@ -238,7 +192,7 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 			value.Services[0].VLESSReality.ShortIDs = []string{"xyz"}
 		},
 		"invalid xver": func(value *Configuration) {
-			value.Services[0].VLESSReality.Xver = 3
+			value.Services[0].VLESSReality.Xver = 0
 		},
 		"invalid client version": func(value *Configuration) {
 			value.Services[0].VLESSReality.MinClientVersion = "256.0.0"
@@ -270,7 +224,7 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 			value.Services[0].VLESSReality.Fallbacks = []VLESSFallback{{Dest: "missing-port"}}
 		},
 		"incomplete ML-DSA pair": func(value *Configuration) {
-			value.Services[0].VLESSReality.MLDSA65Seed = base64.RawURLEncoding.EncodeToString(bytesOf(32, 1))
+			value.Services[0].VLESSReality.MLDSA65Seed = "unsupported"
 		},
 		"invalid VLESS encryption": func(value *Configuration) {
 			value.Services[0].VLESSReality.Decryption = "invalid"
@@ -311,39 +265,50 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	if _, err := Decode(raw); err == nil {
 		t.Fatal("Decode() accepted an unknown field")
 	}
-	legacy := []byte(`{"xray_version":"26.3.27","api_port":10085,"credential_seed":"secret","vless_reality":{}}`)
+	delete(object, "unknown")
+	services := object["services"].([]any)
+	services[0].(map[string]any)["public_port"] = 8443
+	raw, _ = json.Marshal(object)
+	if _, err := Decode(raw); err == nil {
+		t.Fatal("Decode() accepted a service-level public_port")
+	}
+	legacy := []byte(`{"xray_version":"26.7.28","api_port":10085,"credential_seed":"secret","vless_reality":{}}`)
 	if _, err := Decode(legacy); err == nil {
 		t.Fatal("Decode() accepted the retired single-service configuration")
 	}
 }
 
-func TestRealityTargetsAcceptedByXrayAreValid(t *testing.T) {
+func TestRealityTargetRequiresCanonicalDomainAndPort(t *testing.T) {
 	t.Parallel()
-	for _, target := range []string{"addons.mozilla.org:443", "127.0.0.1:443", "[2001:db8::1]:443", "443", "/run/fallback.sock", "@fallback"} {
+	for _, target := range []string{"addons.mozilla.org:443", "fallback.example.com:8443"} {
 		target := target
 		t.Run(strings.ReplaceAll(target, "/", "_"), func(t *testing.T) {
 			services := testEditableServices()[:1]
 			services[0].VLESSReality.Target = target
-			if _, err := NewConfiguration("26.3.27", 10085, services); err != nil {
+			if _, err := NewConfiguration("26.7.28", 10085, services); err != nil {
 				t.Fatalf("target %q was rejected: %v", target, err)
 			}
 		})
 	}
-}
-
-func bytesOf(size int, value byte) []byte {
-	return []byte(strings.Repeat(string([]byte{value}), size))
+	for _, target := range []string{"ADDONS.MOZILLA.ORG:443", "127.0.0.1:443", "[2001:db8::1]:443", "443", "/run/fallback.sock", "@fallback"} {
+		services := testEditableServices()[:1]
+		services[0].VLESSReality.Target = target
+		if _, err := NewConfiguration("26.7.28", 10085, services); err == nil {
+			t.Fatalf("target %q was accepted", target)
+		}
+	}
 }
 
 func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecrets(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	value, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
 	if err != nil {
 		t.Fatal(err)
 	}
 	value.Routing = testRoutingConfiguration()
 	value.DNS = testDNSConfiguration()
 	editable := Editable(value)
+	editable.Outbounds[0].Freedom.DomainStrategy = "UseIPv4"
 	editable.Routing.Rules[0].DisplayName = "Updated route"
 	editable.DNS.Servers[0].DisplayName = "Updated regional DNS"
 	editable.DNS.Servers[0].Domains[0] = "updated.example.com"
@@ -359,6 +324,7 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 		main.VLESSReality.PrivateKey != value.Services[0].VLESSReality.PrivateKey ||
 		main.VLESSReality.ShortIDs[0] != value.Services[0].VLESSReality.ShortIDs[0] ||
 		main.DisplayName != "Updated Main" || merged.Routing.Rules[0].DisplayName != "Updated route" ||
+		merged.Outbounds[0].Freedom.DomainStrategy != "UseIPv4" || value.Outbounds[0].Freedom.DomainStrategy != "AsIs" ||
 		merged.DNS.Servers[0].DisplayName != "Updated regional DNS" ||
 		merged.DNS.Servers[0].Domains[0] != "updated.example.com" ||
 		value.Routing.Rules[0].DisplayName != "Block private destinations" ||
@@ -373,7 +339,7 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	createdMain, createdMainExists := created.FindService("reality-main")
 	if err != nil || created.CredentialSeed == "" || created.CredentialSeed == value.CredentialSeed ||
 		len(created.Services) != 2 || !createdMainExists ||
-		createdMain.VLESSReality.PrivateKey != editable.Services[0].VLESSReality.PrivateKey {
+		createdMain.VLESSReality.PrivateKey == value.Services[0].VLESSReality.PrivateKey {
 		t.Fatalf("NewFromEditable() = %+v, %v", created, err)
 	}
 	deleteRequest := Editable(merged)
@@ -385,9 +351,33 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	}
 }
 
+func TestEditableRoutingNormalizesEmptyAttributes(t *testing.T) {
+	t.Parallel()
+	value, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Routing = testRoutingConfiguration()
+	if value.Routing.Rules[0].Attributes != nil {
+		t.Fatal("test fixture unexpectedly has non-nil attributes")
+	}
+
+	editable := Editable(value)
+	if editable.Routing.Rules[0].Attributes == nil {
+		t.Fatal("Editable() left empty routing attributes nil")
+	}
+	raw, err := json.Marshal(editable.Routing.Rules[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"attributes":{}`) {
+		t.Fatalf("routing rule JSON = %s", raw)
+	}
+}
+
 func TestDNSValidationRejectsUnsafeOrAmbiguousServers(t *testing.T) {
 	t.Parallel()
-	valid, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	valid, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +429,7 @@ func TestDNSValidationRejectsUnsafeOrAmbiguousServers(t *testing.T) {
 
 func TestDNSValidationAcceptsSupportedTransportsAndDisabledDefault(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	value, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,24 +451,38 @@ func TestDNSValidationAcceptsSupportedTransportsAndDisabledDefault(t *testing.T)
 
 func TestRoutingValidationRejectsUnsafeOrAmbiguousRules(t *testing.T) {
 	t.Parallel()
-	valid, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	valid, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
 	if err != nil {
 		t.Fatal(err)
 	}
 	valid.Routing = testRoutingConfiguration()
 	tests := map[string]func(*Configuration){
-		"invalid ID":       func(value *Configuration) { value.Routing.Rules[0].RuleID = "Invalid ID" },
-		"duplicate ID":     func(value *Configuration) { value.Routing.Rules[1].RuleID = value.Routing.Rules[0].RuleID },
-		"missing match":    func(value *Configuration) { value.Routing.Rules[0].Domains = nil; value.Routing.Rules[0].IPCIDRs = nil },
-		"unknown action":   func(value *Configuration) { value.Routing.Rules[0].Action = "proxy" },
-		"uppercase domain": func(value *Configuration) { value.Routing.Rules[0].Domains[0] = "Example.com" },
-		"domain expression": func(value *Configuration) {
-			value.Routing.Rules[0].Domains[0] = "regexp:example.com"
+		"invalid ID":   func(value *Configuration) { value.Routing.Rules[0].RuleID = "Invalid ID" },
+		"duplicate ID": func(value *Configuration) { value.Routing.Rules[1].RuleID = value.Routing.Rules[0].RuleID },
+		"missing match": func(value *Configuration) {
+			value.Routing.Rules[0].Domains = nil
+			value.Routing.Rules[0].DestinationIPs = nil
 		},
-		"host IP":       func(value *Configuration) { value.Routing.Rules[0].IPCIDRs[0] = "192.0.2.1" },
-		"unmasked CIDR": func(value *Configuration) { value.Routing.Rules[0].IPCIDRs[0] = "192.0.2.1/24" },
+		"unknown outbound": func(value *Configuration) { value.Routing.Rules[0].OutboundTag = "proxy" },
+		"invalid regexp": func(value *Configuration) {
+			value.Routing.Rules[0].Domains[0] = "regexp:["
+		},
+		"unsafe geosite path": func(value *Configuration) { value.Routing.Rules[0].Domains[0] = "ext:../geosite.dat:cn" },
+		"unmasked CIDR":       func(value *Configuration) { value.Routing.Rules[0].DestinationIPs[0] = "192.0.2.1/24" },
 		"unknown protocol": func(value *Configuration) {
 			value.Routing.Rules[1].Protocols[0] = "ssh"
+		},
+		"invalid source port": func(value *Configuration) { value.Routing.Rules[0].SourcePort = "443-80" },
+		"invalid network":     func(value *Configuration) { value.Routing.Rules[0].Network = "quic" },
+		"unknown inbound": func(value *Configuration) {
+			value.Routing.Rules[0].InboundTags = []string{"missing"}
+		},
+		"invalid attribute regexp": func(value *Configuration) {
+			value.Routing.Rules[0].Attributes = map[string]string{"user-agent": "["}
+		},
+		"old Xray geodata rule": func(value *Configuration) {
+			value.XrayVersion = "26.7.10"
+			value.Routing.Rules[0].Domains = []string{"geosite:cn"}
 		},
 		"duplicate value": func(value *Configuration) {
 			value.Routing.Rules[0].Domains = append(value.Routing.Rules[0].Domains, value.Routing.Rules[0].Domains[0])
@@ -508,17 +512,13 @@ func testEditableServices() []EditableService {
 	return []EditableService{
 		{
 			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
-			VLESSReality: &EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 443,
+			VLESSReality: &EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
-			VLESSReality: &EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 8443,
+			VLESSReality: &EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	}
 }
@@ -526,7 +526,7 @@ func testEditableServices() []EditableService {
 func testEditableShadowsocks() EditableService {
 	return EditableService{
 		Type: ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
-		Listen: "0.0.0.0", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+		Listen: "0.0.0.0", Port: 8388,
 		Shadowsocks: &EditableShadowsocks{
 			Method: ShadowsocksMethod2022AES256, Network: ShadowsocksNetworkTCPUDP, IVCheck: true,
 		},
@@ -537,12 +537,12 @@ func testRoutingConfiguration() RoutingConfiguration {
 	return RoutingConfiguration{Rules: []RoutingRule{
 		{
 			RuleID: "block-private", DisplayName: "Block private destinations", Enabled: true,
-			Domains: []string{"internal.example.com"}, IPCIDRs: []string{"192.0.2.0/24"},
-			Action: RoutingActionBlocked,
+			Domains: []string{"domain:internal.example.com"}, DestinationIPs: []string{"192.0.2.0/24"},
+			OutboundTag: RoutingOutboundBlocked,
 		},
 		{
 			RuleID: "allow-web", DisplayName: "Allow web protocols", Enabled: true,
-			Protocols: []string{"http", "tls"}, Action: RoutingActionDirect,
+			Protocols: []string{"http", "tls"}, OutboundTag: RoutingOutboundDirect,
 		},
 	}}
 }

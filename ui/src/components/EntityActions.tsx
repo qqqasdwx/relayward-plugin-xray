@@ -11,7 +11,7 @@ interface EntityActionsProps {
   t: Translator
   onMove?: (offset: number) => void
   onEdit: () => void
-  onDelete: () => void
+  onDelete?: () => void
 }
 
 function Action({ label, disabled, destructive = false, onClick, children }: {
@@ -57,9 +57,11 @@ export function EntityActions({ busy, index, count, t, onMove, onEdit, onDelete 
       <Action label={t("Edit")} disabled={busy} onClick={onEdit}>
         <Pencil />
       </Action>
-      <Action label={t("Delete")} disabled={busy} destructive onClick={onDelete}>
-        <Trash2 />
-      </Action>
+      {onDelete != null ? (
+        <Action label={t("Delete")} disabled={busy} destructive onClick={onDelete}>
+          <Trash2 />
+        </Action>
+      ) : null}
     </div>
   )
 }

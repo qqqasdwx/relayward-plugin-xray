@@ -1,9 +1,11 @@
 package xrayconfig
 
 import (
-	"encoding/base64"
+	"bytes"
 	"encoding/json"
-	"strings"
+	"net"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
@@ -15,11 +17,15 @@ func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 	value.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{
 		{
 			RuleID: "block-private", DisplayName: "Block private", Enabled: true,
-			IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
+			SourceIPs: []string{"198.51.100.10"}, SourcePort: "1000-2000", VLESSRoute: "8443",
+			Network: "tcp", Attributes: map[string]string{"user-agent": "curl.*"},
+			DestinationIPs: []string{"192.0.2.0/24"}, DestinationPort: "443",
+			Users: []string{"relayward:test"}, InboundTags: []string{"reality-main"},
+			OutboundTag: config.RoutingOutboundBlocked,
 		},
 		{
 			RuleID: "allow-example", DisplayName: "Allow example", Enabled: true,
-			Domains: []string{"example.com"}, Protocols: []string{"tls"}, Action: config.RoutingActionDirect,
+			Domains: []string{"domain:example.com"}, Protocols: []string{"tls"}, OutboundTag: config.RoutingOutboundDirect,
 		},
 	}}
 	value.DNS = config.DNSConfiguration{
@@ -85,12 +91,19 @@ func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 		Routing struct {
 			DomainStrategy string `json:"domainStrategy"`
 			Rules          []struct {
-				RuleTag     string   `json:"ruleTag"`
-				OutboundTag string   `json:"outboundTag"`
-				Domain      []string `json:"domain"`
-				IP          []string `json:"ip"`
-				Protocol    []string `json:"protocol"`
-				InboundTag  []string `json:"inboundTag"`
+				RuleTag     string            `json:"ruleTag"`
+				OutboundTag string            `json:"outboundTag"`
+				Domain      []string          `json:"domain"`
+				IP          []string          `json:"ip"`
+				Protocol    []string          `json:"protocol"`
+				InboundTag  []string          `json:"inboundTag"`
+				SourceIP    []string          `json:"sourceIP"`
+				SourcePort  string            `json:"sourcePort"`
+				VLESSRoute  string            `json:"vlessRoute"`
+				Network     string            `json:"network"`
+				Port        string            `json:"port"`
+				User        []string          `json:"user"`
+				Attributes  map[string]string `json:"attrs"`
 			} `json:"rules"`
 		} `json:"routing"`
 	}
@@ -98,23 +111,33 @@ func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(generated.API.Services) != 3 || generated.API.Services[1] != "RoutingService" ||
-		len(generated.Inbounds) != 3 || generated.Inbounds[1].Tag != "reality-backup" ||
+		len(generated.Inbounds) != 5 || generated.Inbounds[1].Tag != "reality-backup" ||
 		generated.Inbounds[1].Protocol != "vless" ||
-		generated.Inbounds[1].StreamSettings.RealitySettings.Target != "www.cloudflare.com:443" ||
+		generated.Inbounds[1].StreamSettings.RealitySettings.Target == "www.cloudflare.com:443" ||
 		!generated.Inbounds[1].Sniffing.Enabled || !generated.Inbounds[1].Sniffing.RouteOnly ||
 		len(generated.Inbounds[1].Sniffing.DestOverride) != 3 ||
-		generated.Inbounds[2].Tag != "reality-main" || len(generated.Outbounds) != 2 ||
+		generated.Inbounds[2].Tag != realityTunnelTag("reality-backup") || generated.Inbounds[2].Protocol != "tunnel" ||
+		generated.Inbounds[3].Tag != "reality-main" || generated.Inbounds[4].Tag != realityTunnelTag("reality-main") ||
+		len(generated.Outbounds) != 2 ||
 		generated.Outbounds[1].Tag != "blocked" || generated.Outbounds[1].Protocol != "blackhole" ||
-		generated.Outbounds[0].Settings.DomainStrategy != "UseIPv4" ||
+		generated.Outbounds[0].Settings.DomainStrategy != "AsIs" ||
 		!generated.Policy.Levels["0"].StatsUserOnline {
 		t.Fatalf("generated Xray configuration = %+v", generated)
 	}
-	if len(generated.Routing.Rules) != 3 || generated.Routing.Rules[0].RuleTag != APIRuleTag ||
+	if len(generated.Routing.Rules) != 7 || generated.Routing.Rules[0].RuleTag != APIRuleTag ||
 		generated.Routing.DomainStrategy != "IPIfNonMatch" ||
-		generated.Routing.Rules[1].RuleTag != "relayward-static-block-private" ||
-		generated.Routing.Rules[1].IP[0] != "192.0.2.0/24" ||
-		generated.Routing.Rules[2].Domain[0] != "domain:example.com" ||
-		generated.Routing.Rules[2].Protocol[0] != "tls" || len(generated.Routing.Rules[2].InboundTag) != 2 {
+		generated.Routing.Rules[1].RuleTag != realityTunnelAllowRuleTag("reality-backup") ||
+		generated.Routing.Rules[1].Domain[0] != "full:www.cloudflare.com" ||
+		generated.Routing.Rules[2].RuleTag != realityTunnelBlockRuleTag("reality-backup") ||
+		generated.Routing.Rules[5].RuleTag != "relayward-static-block-private" ||
+		generated.Routing.Rules[5].IP[0] != "192.0.2.0/24" ||
+		generated.Routing.Rules[5].SourceIP[0] != "198.51.100.10" ||
+		generated.Routing.Rules[5].SourcePort != "1000-2000" || generated.Routing.Rules[5].VLESSRoute != "8443" ||
+		generated.Routing.Rules[5].Network != "tcp" || generated.Routing.Rules[5].Port != "443" ||
+		generated.Routing.Rules[5].User[0] != "relayward:test" || generated.Routing.Rules[5].InboundTag[0] != "reality-main" ||
+		generated.Routing.Rules[5].Attributes["user-agent"] != "curl.*" ||
+		generated.Routing.Rules[6].Domain[0] != "domain:example.com" ||
+		generated.Routing.Rules[6].Protocol[0] != "tls" || len(generated.Routing.Rules[6].InboundTag) != 0 {
 		t.Fatalf("generated routing configuration = %+v", generated.Routing)
 	}
 	if generated.DNS.QueryStrategy != "UseIPv4" || !generated.DNS.DisableFallbackIfMatch ||
@@ -148,22 +171,60 @@ func TestRenderOmitsDisabledServices(t *testing.T) {
 	if err := json.Unmarshal(raw, &generated); err != nil {
 		t.Fatal(err)
 	}
-	if len(generated.Inbounds) != 2 {
-		t.Fatalf("inbounds = %d, want API plus one enabled service", len(generated.Inbounds))
+	if len(generated.Inbounds) != 3 {
+		t.Fatalf("inbounds = %d, want API plus one VLESS and its tunnel", len(generated.Inbounds))
 	}
-	if len(generated.Inbounds[1].Sniffing) != 0 {
-		t.Fatal("disabled or absent domain routing unexpectedly enabled sniffing")
-	}
-	if len(generated.DNS) != 0 || generated.Outbounds[0].Settings.DomainStrategy != "" {
+	if len(generated.DNS) != 0 || generated.Outbounds[0].Settings.DomainStrategy != "AsIs" {
 		t.Fatal("disabled DNS unexpectedly changed the Xray configuration")
+	}
+}
+
+func TestRenderBuildsFreedomAndBlackholeOutbounds(t *testing.T) {
+	t.Parallel()
+	value := testConfiguration(t)
+	value.Outbounds = append(value.Outbounds,
+		config.Outbound{
+			Tag: "IPv4", Protocol: config.OutboundProtocolFreedom,
+			Freedom: &config.FreedomOutboundSettings{
+				DomainStrategy: "UseIPv4", Redirect: "127.0.0.1:1080", UserLevel: 1, ProxyProtocol: 2,
+				Fragment:   &config.FreedomFragment{Packets: "tlshello", Length: "100-200", Interval: "10-20", MaxSplit: "300-400"},
+				Noises:     []config.FreedomNoise{{Type: "rand", Packet: "10-20", Delay: "10-16", ApplyTo: "ipv4"}},
+				FinalRules: []config.FreedomFinalRule{{Action: "block", Network: "tcp", Port: "443", IPs: []string{"geoip:private"}, BlockDelay: "5000-10000"}},
+			},
+		},
+		config.Outbound{Tag: "ads_blocked", Protocol: config.OutboundProtocolBlackhole, Blackhole: &config.BlackholeOutboundSettings{ResponseType: "http"}},
+	)
+	raw, err := Render(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated struct {
+		Outbounds []struct {
+			Tag      string         `json:"tag"`
+			Protocol string         `json:"protocol"`
+			Settings map[string]any `json:"settings"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(raw, &generated); err != nil {
+		t.Fatal(err)
+	}
+	if len(generated.Outbounds) != 4 || generated.Outbounds[2].Tag != "IPv4" || generated.Outbounds[2].Protocol != "freedom" ||
+		generated.Outbounds[2].Settings["domainStrategy"] != "UseIPv4" || generated.Outbounds[2].Settings["redirect"] != "127.0.0.1:1080" ||
+		generated.Outbounds[2].Settings["proxyProtocol"] != float64(2) || len(generated.Outbounds[2].Settings["finalRules"].([]any)) != 1 ||
+		generated.Outbounds[3].Tag != "ads_blocked" || generated.Outbounds[3].Protocol != "blackhole" {
+		t.Fatalf("rendered outbounds = %+v", generated.Outbounds)
+	}
+	response := generated.Outbounds[3].Settings["response"].(map[string]any)
+	if response["type"] != "http" {
+		t.Fatalf("blackhole response = %+v", response)
 	}
 }
 
 func TestRenderShadowsocks2022Inbound(t *testing.T) {
 	t.Parallel()
-	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
 		Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
-		Listen: "0.0.0.0", Port: 8388, PublicHost: "ss.example.com", PublicPort: 8388,
+		Listen: "0.0.0.0", Port: 8388,
 		Shadowsocks: &config.EditableShadowsocks{
 			Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
 		},
@@ -196,119 +257,11 @@ func TestRenderShadowsocks2022Inbound(t *testing.T) {
 	}
 }
 
-func TestRenderAppliesInboundTransportRealityAndSniffingSettings(t *testing.T) {
+func TestRenderVLESSRealityStaticContract(t *testing.T) {
 	t.Parallel()
 	value := testConfiguration(t)
 	service := &value.Services[0]
-	service.TCP = config.TCPSettings{
-		AcceptProxyProtocol: true,
-		Header: config.TCPHeader{Type: config.TCPHeaderHTTP,
-			Request:  &config.TCPHTTPRequest{Version: "1.1", Method: "GET", Path: []string{"/edge"}, Headers: map[string][]string{"Host": {"addons.mozilla.org"}}},
-			Response: &config.TCPHTTPResponse{Version: "1.1", Status: "200", Reason: "OK", Headers: map[string][]string{"Content-Type": {"text/html"}}},
-		},
-	}
-	service.Sniffing = config.Sniffing{
-		Enabled: true, DestOverride: []string{"http", "tls"}, MetadataOnly: true,
-		RouteOnly: true, IPsExcluded: []string{"geoip:private"}, DomainsExcluded: []string{"domain:example.com"},
-	}
-	service.VLESSReality.Show = true
-	service.VLESSReality.Xver = 2
-	service.VLESSReality.MinClientVersion = "1.0.0"
-	service.VLESSReality.MaxClientVersion = "26.3.27"
-	service.VLESSReality.MaxTimeDiff = 1000
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generated struct {
-		Inbounds []struct {
-			Tag            string `json:"tag"`
-			StreamSettings struct {
-				TCPSettings struct {
-					AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
-					Header              struct {
-						Type    string `json:"type"`
-						Request struct {
-							Path []string `json:"path"`
-						} `json:"request"`
-					} `json:"header"`
-				} `json:"tcpSettings"`
-				RealitySettings struct {
-					Show             bool   `json:"show"`
-					Xver             uint8  `json:"xver"`
-					MinClientVersion string `json:"minClientVer"`
-					MaxClientVersion string `json:"maxClientVer"`
-					MaxTimeDiff      uint64 `json:"maxTimeDiff"`
-				} `json:"realitySettings"`
-			} `json:"streamSettings"`
-			Sniffing struct {
-				Enabled      bool     `json:"enabled"`
-				MetadataOnly bool     `json:"metadataOnly"`
-				IPsExcluded  []string `json:"ipsExcluded"`
-			} `json:"sniffing"`
-		} `json:"inbounds"`
-	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
-		t.Fatal(err)
-	}
-	var inbound *struct {
-		Tag            string `json:"tag"`
-		StreamSettings struct {
-			TCPSettings struct {
-				AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
-				Header              struct {
-					Type    string `json:"type"`
-					Request struct {
-						Path []string `json:"path"`
-					} `json:"request"`
-				} `json:"header"`
-			} `json:"tcpSettings"`
-			RealitySettings struct {
-				Show             bool   `json:"show"`
-				Xver             uint8  `json:"xver"`
-				MinClientVersion string `json:"minClientVer"`
-				MaxClientVersion string `json:"maxClientVer"`
-				MaxTimeDiff      uint64 `json:"maxTimeDiff"`
-			} `json:"realitySettings"`
-		} `json:"streamSettings"`
-		Sniffing struct {
-			Enabled      bool     `json:"enabled"`
-			MetadataOnly bool     `json:"metadataOnly"`
-			IPsExcluded  []string `json:"ipsExcluded"`
-		} `json:"sniffing"`
-	}
-	for index := range generated.Inbounds {
-		if generated.Inbounds[index].Tag == service.ServiceID {
-			inbound = &generated.Inbounds[index]
-		}
-	}
-	if inbound == nil || !inbound.StreamSettings.TCPSettings.AcceptProxyProtocol || inbound.StreamSettings.TCPSettings.Header.Type != "http" ||
-		inbound.StreamSettings.TCPSettings.Header.Request.Path[0] != "/edge" || !inbound.StreamSettings.RealitySettings.Show ||
-		inbound.StreamSettings.RealitySettings.Xver != 2 || inbound.StreamSettings.RealitySettings.MinClientVersion != "1.0.0" ||
-		inbound.StreamSettings.RealitySettings.MaxClientVersion != "26.3.27" || inbound.StreamSettings.RealitySettings.MaxTimeDiff != 1000 ||
-		!inbound.Sniffing.Enabled || !inbound.Sniffing.MetadataOnly || inbound.Sniffing.IPsExcluded[0] != "geoip:private" {
-		t.Fatalf("generated inbound = %+v", inbound)
-	}
-}
-
-func TestRenderEmitsCompleteSupportedInboundSettings(t *testing.T) {
-	t.Parallel()
-	value := testConfiguration(t)
-	service := &value.Services[0]
-	service.Sockopt = &config.SocketSettings{
-		Mark: 10, TCPFastOpen: true, TProxy: config.TProxyRedirect, AcceptProxyProtocol: true,
-		TCPMPTCP: true, TCPKeepAliveInterval: 15, TCPKeepAliveIdle: 300,
-		TCPMaxSeg: 1440, TCPUserTimeout: 10000, TCPWindowClamp: 600,
-		TCPCongestion: "cubic", V6Only: true,
-		Custom: []config.CustomSockopt{{System: "linux", Network: "tcp4", Level: "6", Opt: "19", Type: "int", Value: "1"}},
-	}
-	service.VLESSReality.TestSeed = []uint32{900, 500, 900, 256}
-	service.VLESSReality.Fallbacks = []config.VLESSFallback{{Name: "fallback.example.com", ALPN: "http/1.1", Path: "/edge", Dest: "127.0.0.1:8080", Xver: 1}}
-	service.VLESSReality.MLDSA65Seed = base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("s", 32)))
-	service.VLESSReality.MLDSA65Verify = base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("v", 1952)))
-	service.VLESSReality.MasterKeyLog = "/tmp/relayward-xray.keys"
-	service.VLESSReality.LimitFallbackUpload = &config.RealityLimitFallback{AfterBytes: 1024, BytesPerSec: 2048, BurstBytesPerSec: 4096}
-	service.VLESSReality.LimitFallbackDownload = &config.RealityLimitFallback{AfterBytes: 2048, BytesPerSec: 4096, BurstBytesPerSec: 8192}
+	service.TCP.AcceptProxyProtocol = true
 	raw, err := Render(value)
 	if err != nil {
 		t.Fatal(err)
@@ -317,35 +270,92 @@ func TestRenderEmitsCompleteSupportedInboundSettings(t *testing.T) {
 	if err := json.Unmarshal(raw, &root); err != nil {
 		t.Fatal(err)
 	}
-	var inbound map[string]any
+	var inbound, tunnel map[string]any
 	for _, candidate := range root["inbounds"].([]any) {
 		item := candidate.(map[string]any)
 		if item["tag"] == service.ServiceID {
 			inbound = item
-			break
+		}
+		if item["tag"] == realityTunnelTag(service.ServiceID) {
+			tunnel = item
 		}
 	}
-	if inbound == nil {
-		t.Fatal("rendered inbound was not found")
+	if inbound == nil || tunnel == nil {
+		t.Fatal("rendered VLESS inbound or tunnel was not found")
 	}
 	settings := inbound["settings"].(map[string]any)
 	stream := inbound["streamSettings"].(map[string]any)
 	reality := stream["realitySettings"].(map[string]any)
-	sockopt := stream["sockopt"].(map[string]any)
-	fallback := settings["fallbacks"].([]any)[0].(map[string]any)
-	custom := sockopt["customSockopt"].([]any)[0].(map[string]any)
-	if settings["decryption"] != "none" || len(settings["testseed"].([]any)) != 4 || fallback["dest"] != "127.0.0.1:8080" ||
-		reality["mldsa65Seed"] != service.VLESSReality.MLDSA65Seed || reality["masterKeyLog"] != "/tmp/relayward-xray.keys" ||
-		reality["limitFallbackUpload"].(map[string]any)["bytesPerSec"] != float64(2048) ||
-		sockopt["tcpCongestion"] != "cubic" || sockopt["v6only"] != true || sockopt["tcpMptcp"] != true ||
-		sockopt["tcpKeepAliveIdle"] != float64(300) || custom["opt"] != "19" || custom["network"] != "tcp4" {
-		t.Fatalf("rendered complete inbound = %s", raw)
+	rawSettings := stream["rawSettings"].(map[string]any)
+	if len(settings) != 1 || settings["decryption"] != "none" || stream["method"] != "raw" || stream["security"] != "reality" ||
+		len(stream) != 4 || rawSettings["acceptProxyProtocol"] != true || reality["minClientVer"] != "1.0.0" ||
+		reality["xver"] != float64(2) ||
+		reality["serverNames"].([]any)[0] != "www.cloudflare.com" || reality["shortIds"].([]any)[0] != service.VLESSReality.ShortIDs[0] ||
+		reality["limitFallbackUpload"].(map[string]any)["afterBytes"] != float64(10*1024*1024) ||
+		reality["limitFallbackDownload"].(map[string]any)["bytesPerSec"] != float64(1024*1024) {
+		t.Fatalf("rendered VLESS inbound = %s", raw)
 	}
-	if _, exists := sockopt["tcpcongestion"]; exists {
-		t.Fatalf("renderer used non-canonical tcpcongestion key: %s", raw)
+	for _, field := range []string{"network", "tcpSettings", "sockopt", "finalmask"} {
+		if _, exists := stream[field]; exists {
+			t.Fatalf("streamSettings unexpectedly contains %q: %s", field, raw)
+		}
 	}
-	if _, exists := sockopt["V6Only"]; exists {
-		t.Fatalf("renderer used non-canonical V6Only key: %s", raw)
+	for _, field := range []string{"show", "masterKeyLog", "mldsa65Seed", "maxClientVer", "maxTimeDiff"} {
+		if _, exists := reality[field]; exists {
+			t.Fatalf("realitySettings unexpectedly contains %q: %s", field, raw)
+		}
+	}
+	tunnelPort := uint16(tunnel["port"].(float64))
+	targetHost, targetPort, err := net.SplitHostPort(reality["target"].(string))
+	if err != nil || targetHost != "127.0.0.1" || targetPort != strconv.Itoa(int(tunnelPort)) ||
+		tunnel["listen"] != "127.0.0.1" || tunnel["protocol"] != "tunnel" {
+		t.Fatalf("rendered REALITY tunnel = %s", raw)
+	}
+	tunnelSettings := tunnel["settings"].(map[string]any)
+	tunnelStream := tunnel["streamSettings"].(map[string]any)
+	tunnelRawSettings := tunnelStream["rawSettings"].(map[string]any)
+	if tunnelSettings["rewriteAddress"] != "www.cloudflare.com" || tunnelSettings["rewritePort"] != float64(443) ||
+		tunnelSettings["allowedNetwork"] != "tcp" || tunnelStream["method"] != "raw" ||
+		tunnelStream["security"] != "none" || tunnelRawSettings["acceptProxyProtocol"] != true {
+		t.Fatalf("rendered REALITY tunnel settings = %s", raw)
+	}
+}
+
+func TestRenderVLESSRealityGoldenConfiguration(t *testing.T) {
+	t.Parallel()
+	value := config.Configuration{
+		XrayVersion: "26.7.28", APIPort: 10085,
+		CredentialSeed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Services: []config.Service{{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "vless-main", DisplayName: "VLESS Main",
+			Listen: "0.0.0.0", Port: 54321,
+			TCP:      config.TCPSettings{AcceptProxyProtocol: true, Header: config.TCPHeader{Type: config.TCPHeaderNone}},
+			Sniffing: config.Sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}, RouteOnly: true},
+			VLESSReality: &config.VLESSReality{
+				Decryption: "none", Encryption: "none", Xver: 2, Target: "addons.mozilla.org:443",
+				ServerNames: []string{"addons.mozilla.org"},
+				PrivateKey:  "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+				ShortIDs:    []string{"0011223344556677"}, MinClientVersion: "1.0.0",
+				Flow: config.VLESSVisionFlow, Fingerprint: "chrome", SpiderX: "/",
+			},
+		}},
+		Outbounds: config.DefaultOutbounds(),
+	}
+	raw, err := Render(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, raw, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	formatted.WriteByte('\n')
+	expected, err := os.ReadFile("testdata/vless_reality.golden.json")
+	if err != nil {
+		t.Fatalf("read golden configuration: %v\ngenerated:\n%s", err, formatted.Bytes())
+	}
+	if !bytes.Equal(formatted.Bytes(), expected) {
+		t.Fatalf("generated VLESS configuration does not match testdata/vless_reality.golden.json\ngenerated:\n%s", formatted.Bytes())
 	}
 }
 
@@ -388,20 +398,16 @@ func TestSupportsOnlyRegisteredServiceTypes(t *testing.T) {
 
 func testConfiguration(t *testing.T) config.Configuration {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
+	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.microsoft.com:443", ServerNames: []string{"www.microsoft.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
-			VLESSReality: &config.EditableVLESSReality{
-				Target: "www.cloudflare.com:443", ServerNames: []string{"www.cloudflare.com"}, Fingerprint: "chrome",
-			},
+			Listen: "0.0.0.0", Port: 8443,
+			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	})
 	if err != nil {

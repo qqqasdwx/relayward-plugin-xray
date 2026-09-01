@@ -41,6 +41,7 @@ type Status struct {
 	ConfigurationSHA256 string
 	Healthy             bool
 	Message             string
+	Listeners           []ListenerStatus
 }
 
 type Manager struct {
@@ -48,6 +49,7 @@ type Manager struct {
 	installer     Installer
 	startupGrace  time.Duration
 	connectAPI    func(context.Context, config.Configuration) (runtimeAPI, error)
+	inspect       func(config.Configuration) []ListenerStatus
 
 	operation             sync.Mutex
 	state                 sync.Mutex
@@ -100,6 +102,7 @@ func NewManager(dataDirectory string, installer Installer) (*Manager, error) {
 		connectAPI: func(ctx context.Context, configuration config.Configuration) (runtimeAPI, error) {
 			return connectXrayAPI(ctx, configuration)
 		},
+		inspect:   inspectListeners,
 		services:  make(map[string]*serviceState),
 		telemetry: telemetry,
 	}, nil
@@ -230,16 +233,32 @@ func (manager *Manager) reconcileConfiguredServices(configuration config.Configu
 
 func (manager *Manager) GetStatus() Status {
 	manager.state.Lock()
-	defer manager.state.Unlock()
 	status := Status{Generation: manager.generation, ConfigurationSHA256: manager.digest}
 	if manager.generation == 0 {
+		manager.state.Unlock()
 		return status
 	}
 	if manager.process == nil || manager.process.exited() {
 		status.Message = "Xray process is not running"
+		manager.state.Unlock()
 		return status
 	}
+	if manager.running == nil {
+		status.Message = "Xray runtime configuration is unavailable"
+		manager.state.Unlock()
+		return status
+	}
+	configuration := manager.running.configuration
+	manager.state.Unlock()
+	status.Listeners = manager.inspect(configuration)
 	status.Healthy = true
+	for _, listener := range status.Listeners {
+		if listener.State == ListenerNotListening {
+			status.Healthy = false
+			status.Message = fmt.Sprintf("Xray is not listening on %s/%s port %d", listener.ServiceID, listener.Network, listener.Port)
+			break
+		}
+	}
 	return status
 }
 

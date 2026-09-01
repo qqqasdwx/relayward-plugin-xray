@@ -42,6 +42,7 @@ func main() {
 			UIAPI:      &uiAPI,
 		},
 		Permissions: []manifest.Permission{
+			{Name: centerpluginv1.PermissionPortDiagnose, Reason: "Read node listener status and test configured subscription endpoint ports."},
 			{Name: centerpluginv1.PermissionNodeConfigure, Reason: "Read and publish the Xray plugin configuration for managed nodes."},
 			{Name: centerpluginv1.PermissionServicesWrite, Reason: "Publish Xray services that can be bound to node authorizations."},
 		},
