@@ -51,7 +51,9 @@ The Relayward control plane, Agent runtime, shared SDK contracts, risk analysis,
 
 ## Validation
 
-Run the checks relevant to each change:
+Full validation runs in GitHub Actions. The local development host is resource constrained, so default local validation to `git diff --check`, formatting or syntax checks, and small tests that directly cover the changed code. Do not routinely run full Go or frontend suites, production builds, or release packaging locally unless they are needed to diagnose a failure or the user explicitly requests them.
+
+GitHub Actions must cover the checks relevant to each change:
 
 - `go test ./...`
 - `go vet ./...`
@@ -65,3 +67,5 @@ Run the checks relevant to each change:
 For material UI changes, also exercise the iframe through the real UI SDK message protocol in a browser at desktop and 320px widths, in Simplified Chinese and English, and in light and dark themes.
 
 Prefer deterministic fake-Xray lifecycle tests during development. Use the real official artifact only for focused integration validation.
+
+Pushing still requires explicit user confirmation. After an approved push, monitor every triggered workflow to completion; before that, report the commit as CI pending.
