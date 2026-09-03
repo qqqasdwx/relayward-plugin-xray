@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +42,59 @@ func TestResolveAndDownload(t *testing.T) {
 	}
 	if !bytes.Equal(downloaded.Bytes(), payload) {
 		t.Fatalf("downloaded = %q", downloaded.Bytes())
+	}
+}
+
+func TestListVersionsReturnsOnlyInstallablePublishedReleases(t *testing.T) {
+	t.Parallel()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/releases" || request.URL.Query().Get("per_page") != "100" || request.URL.Query().Get("page") != "1" {
+			http.NotFound(response, request)
+			return
+		}
+		fmt.Fprintf(response, `[
+			{"tag_name":"v26.8.1","draft":false,"prerelease":false,"assets":[{"name":"%s","size":12,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","browser_download_url":"%s/download/v26.8.1/%s"}]},
+			{"tag_name":"v26.8.0","draft":false,"prerelease":true,"assets":[{"name":"%s","size":12,"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","browser_download_url":"%s/download/v26.8.0/%s"}]},
+			{"tag_name":"v26.7.9","draft":true,"assets":[]},
+			{"tag_name":"not-semver","draft":false,"assets":[]},
+			{"tag_name":"v26.7.8","draft":false,"assets":[]}
+		]`, assetName, server.URL, assetName, assetName, server.URL, assetName)
+	}))
+	defer server.Close()
+	client := &Client{
+		httpClient: server.Client(), releasesBase: server.URL + "/releases",
+		assetBase: server.URL + "/download",
+	}
+	versions, err := client.ListVersions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 2 || versions[0].Version != "26.8.1" || versions[0].Prerelease ||
+		versions[1].Version != "26.8.0" || !versions[1].Prerelease {
+		t.Fatalf("ListVersions() = %+v", versions)
+	}
+}
+
+func TestListVersionsAcceptsLargeOfficialReleasePage(t *testing.T) {
+	t.Parallel()
+	padding := strings.Repeat("x", (8<<20)+1)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(response, `[{"tag_name":"v26.8.1","draft":false,"padding":"%s","assets":[{"name":"%s","size":12,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","browser_download_url":"%s/download/v26.8.1/%s"}]}]`,
+			padding, assetName, server.URL, assetName)
+	}))
+	defer server.Close()
+	client := &Client{
+		httpClient: server.Client(), releasesBase: server.URL,
+		assetBase: server.URL + "/download",
+	}
+	versions, err := client.ListVersions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[0].Version != "26.8.1" {
+		t.Fatalf("ListVersions() = %+v", versions)
 	}
 }
 

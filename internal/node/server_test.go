@@ -24,6 +24,9 @@ type fakeRuntime struct {
 	authorization string
 	blocks        []xrayruntime.DynamicBlock
 	blockRevision uint64
+	addresses     []xrayruntime.NetworkAddress
+	probe         xrayruntime.EgressProbe
+	probeLineID   string
 }
 
 func (*fakeRuntime) Validate(context.Context, config.Configuration) error { return nil }
@@ -83,6 +86,35 @@ func (runtime *fakeRuntime) ApplyDynamicBlocks(_ context.Context, _ uint64, revi
 	runtime.blockRevision = revision
 	runtime.blocks = append([]xrayruntime.DynamicBlock(nil), blocks...)
 	return nil
+}
+func (runtime *fakeRuntime) NetworkAddresses() ([]xrayruntime.NetworkAddress, error) {
+	return append([]xrayruntime.NetworkAddress(nil), runtime.addresses...), nil
+}
+func (runtime *fakeRuntime) ProbeEgress(_ context.Context, lineID string) (xrayruntime.EgressProbe, error) {
+	runtime.probeLineID = lineID
+	return runtime.probe, nil
+}
+
+func TestServerRunsDiagnostics(t *testing.T) {
+	t.Parallel()
+	runtime := &fakeRuntime{
+		addresses: []xrayruntime.NetworkAddress{{Address: "2001:db8::1", Family: "ipv6", Interface: "eth0"}},
+		probe: xrayruntime.EgressProbe{
+			LineID: "default", Address: "192.0.2.10", Country: "US", Colocation: "SJC",
+			ObservedAtUnixNano: time.Now().UTC().UnixNano(), ElapsedMillis: 12,
+		},
+	}
+	server := New("0.1.0", runtime)
+	addressesRequest := &nodepluginv1.DiagnoseRequest{Name: "network.addresses", Json: []byte(`{}`)}
+	addresses, err := server.Diagnose(t.Context(), addressesRequest)
+	if err != nil || !strings.Contains(string(addresses.GetJson()), "2001:db8::1") {
+		t.Fatalf("Diagnose(network.addresses) = %s, %v", addresses.GetJson(), err)
+	}
+	probeRequest := &nodepluginv1.DiagnoseRequest{Name: "egress.probe", Json: []byte(`{"line_id":"default"}`)}
+	probe, err := server.Diagnose(t.Context(), probeRequest)
+	if err != nil || runtime.probeLineID != "default" || !strings.Contains(string(probe.GetJson()), "192.0.2.10") {
+		t.Fatalf("Diagnose(egress.probe) = %s, line %q, %v", probe.GetJson(), runtime.probeLineID, err)
+	}
 }
 
 func TestServerAppliesConfiguration(t *testing.T) {
@@ -197,9 +229,9 @@ func TestServerRejectsUnknownConfigurationField(t *testing.T) {
 
 func testConfigurationJSON(t *testing.T) []byte {
 	t.Helper()
-	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
+	value, err := config.NewConfiguration("26.7.28", []config.EditableService{{
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
-		Listen: "0.0.0.0", Port: 443,
+		Port:         24443,
 		VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 	}})
 	if err != nil {

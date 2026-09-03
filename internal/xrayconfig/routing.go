@@ -9,7 +9,11 @@ import (
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
-const APIRuleTag = "relayward-api"
+const (
+	APIRuleTag              = "relayward-api"
+	SystemDirectOutboundTag = "relayward/system-direct"
+	BlockedOutboundTag      = "relayward/blocked"
+)
 
 type DynamicBlockRule struct {
 	UserEmail  string
@@ -37,64 +41,90 @@ func CompileRoutingRules(configuration config.Configuration, blocks []DynamicBlo
 	if err := config.Validate(configuration); err != nil {
 		return nil, err
 	}
-	rules := make([]CompiledRoutingRule, 0, 1+len(blocks)+len(configuration.Routing.Rules))
-	rules = append(rules, CompiledRoutingRule{
+	rules := []CompiledRoutingRule{{
 		RuleTag: APIRuleTag, OutboundTag: APIRuleTag, InboundTags: []string{APIRuleTag},
-	})
+	}}
 	for _, service := range configuration.Services {
 		if !service.Enabled || service.Type != config.ServiceTypeVLESSReality {
 			continue
 		}
-		tunnelTag := realityTunnelTag(service.ServiceID)
-		domain, err := config.ParseRoutingDomainExpression("full:" + service.VLESSReality.ServerNames[0])
+		domain, err := config.ParseRoutingDomainExpression("full:" + realityServerName(service))
 		if err != nil {
 			return nil, fmt.Errorf("compile REALITY protection for %q: %w", service.ServiceID, err)
 		}
+		tunnelTag := realityTunnelTag(service.ServiceID)
 		rules = append(rules,
 			CompiledRoutingRule{
-				RuleTag: realityTunnelAllowRuleTag(service.ServiceID), OutboundTag: config.RoutingOutboundDirect,
+				RuleTag: realityTunnelAllowRuleTag(service.ServiceID), OutboundTag: SystemDirectOutboundTag,
 				Domains: []config.RoutingDomainExpression{domain}, InboundTags: []string{tunnelTag},
 			},
 			CompiledRoutingRule{
-				RuleTag: realityTunnelBlockRuleTag(service.ServiceID), OutboundTag: config.RoutingOutboundBlocked,
+				RuleTag: realityTunnelBlockRuleTag(service.ServiceID), OutboundTag: BlockedOutboundTag,
 				InboundTags: []string{tunnelTag},
 			},
 		)
+	}
+	for _, line := range configuration.EgressLines {
+		if !line.Enabled {
+			continue
+		}
+		rules = append(rules, CompiledRoutingRule{
+			RuleTag: diagnosticRuleTag(line.LineID), OutboundTag: config.EgressOutboundTag(line.LineID),
+			InboundTags: []string{diagnosticInboundTag(line.LineID)},
+		})
 	}
 	for index, block := range blocks {
 		address, err := netip.ParseAddr(block.SourceIP)
 		if err != nil || address.String() != block.SourceIP || block.UserEmail == "" || block.InboundTag == "" {
 			return nil, fmt.Errorf("dynamic block %d is invalid", index)
 		}
-		sourceIP, err := config.ParseRoutingIPExpression(block.SourceIP)
-		if err != nil {
-			return nil, fmt.Errorf("dynamic block %d is invalid", index)
-		}
+		sourceIP, _ := config.ParseRoutingIPExpression(block.SourceIP)
 		rules = append(rules, CompiledRoutingRule{
-			RuleTag: fmt.Sprintf("relayward-block-%d", index+1), OutboundTag: config.RoutingOutboundBlocked,
+			RuleTag: fmt.Sprintf("relayward/dynamic-block/%d", index+1), OutboundTag: BlockedOutboundTag,
 			UserEmails: []string{block.UserEmail}, InboundTags: []string{block.InboundTag},
 			SourceIPs: []config.RoutingIPExpression{sourceIP},
 		})
 	}
-	for _, rule := range configuration.Routing.Rules {
+	for _, rule := range configuration.AccessRules {
 		if !rule.Enabled {
 			continue
 		}
-		compiled, err := compileStaticRoutingRule(rule)
+		compiled, err := compileAccessRule(configuration, rule)
 		if err != nil {
-			return nil, fmt.Errorf("compile routing rule %q: %w", rule.RuleID, err)
+			return nil, fmt.Errorf("compile access rule %q: %w", rule.RuleID, err)
 		}
 		rules = append(rules, compiled)
+	}
+	vlessInbounds := enabledVLESSInbounds(configuration)
+	if len(vlessInbounds) > 0 {
+		for _, line := range configuration.EgressLines {
+			if !line.Enabled {
+				continue
+			}
+			rules = append(rules, CompiledRoutingRule{
+				RuleTag:     "relayward/subscription-line/" + line.LineID,
+				OutboundTag: config.EgressOutboundTag(line.LineID),
+				VLESSRoutes: []config.RoutingPortRange{{From: line.VLESSRoute, To: line.VLESSRoute}},
+				InboundTags: append([]string(nil), vlessInbounds...),
+			})
+		}
+		rules = append(rules, CompiledRoutingRule{
+			RuleTag: "relayward/subscription-line/unknown", OutboundTag: BlockedOutboundTag,
+			InboundTags: append([]string(nil), vlessInbounds...),
+		})
 	}
 	return rules, nil
 }
 
-func compileStaticRoutingRule(rule config.RoutingRule) (CompiledRoutingRule, error) {
+func compileAccessRule(configuration config.Configuration, rule config.AccessRule) (CompiledRoutingRule, error) {
+	outboundTag := BlockedOutboundTag
+	if rule.Action == config.AccessActionEgress {
+		outboundTag = config.EgressOutboundTag(rule.EgressLineID)
+	}
 	compiled := CompiledRoutingRule{
-		RuleTag: "relayward-static-" + rule.RuleID, OutboundTag: rule.OutboundTag,
-		Networks: splitNetwork(rule.Network), UserEmails: append([]string(nil), rule.Users...),
-		InboundTags: append([]string(nil), rule.InboundTags...),
-		Protocols:   append([]string(nil), rule.Protocols...), Attributes: cloneStringMap(rule.Attributes),
+		RuleTag: "relayward/access/" + rule.RuleID, OutboundTag: outboundTag,
+		Networks: splitNetwork(rule.Network), Protocols: append([]string(nil), rule.Protocols...),
+		InboundTags: append([]string(nil), rule.ServiceIDs...),
 	}
 	var err error
 	if compiled.Domains, err = parseRoutingDomains(rule.Domains); err != nil {
@@ -109,13 +139,33 @@ func compileStaticRoutingRule(rule config.RoutingRule) (CompiledRoutingRule, err
 	if compiled.DestinationPorts, err = config.ParseRoutingPorts(rule.DestinationPort); err != nil {
 		return CompiledRoutingRule{}, err
 	}
-	if compiled.SourcePorts, err = config.ParseRoutingPorts(rule.SourcePort); err != nil {
-		return CompiledRoutingRule{}, err
-	}
-	if compiled.VLESSRoutes, err = config.ParseRoutingPorts(rule.VLESSRoute); err != nil {
-		return CompiledRoutingRule{}, err
+	if len(rule.AuthorizationIDs) > 0 {
+		serviceIDs := rule.ServiceIDs
+		if len(serviceIDs) == 0 {
+			serviceIDs = make([]string, 0, len(configuration.Services))
+			for _, service := range configuration.Services {
+				if service.Enabled {
+					serviceIDs = append(serviceIDs, service.ServiceID)
+				}
+			}
+		}
+		for _, authorizationID := range rule.AuthorizationIDs {
+			for _, serviceID := range serviceIDs {
+				compiled.UserEmails = append(compiled.UserEmails, config.UserEmail(authorizationID, serviceID))
+			}
+		}
 	}
 	return compiled, nil
+}
+
+func enabledVLESSInbounds(configuration config.Configuration) []string {
+	var result []string
+	for _, service := range configuration.Services {
+		if service.Enabled && service.Type == config.ServiceTypeVLESSReality {
+			result = append(result, service.ServiceID)
+		}
+	}
+	return result
 }
 
 func parseRoutingDomains(values []string) ([]config.RoutingDomainExpression, error) {
@@ -142,21 +192,10 @@ func parseRoutingIPs(values []string) ([]config.RoutingIPExpression, error) {
 	return parsed, nil
 }
 
-func NeedsSniffing(configuration config.Configuration) bool {
-	for _, rule := range configuration.Routing.Rules {
-		if rule.Enabled && (len(rule.Domains) > 0 || len(rule.Protocols) > 0 || len(rule.Attributes) > 0) {
-			return true
-		}
-	}
-	return false
-}
-
 func renderRoutingRules(rules []CompiledRoutingRule) []any {
 	values := make([]any, len(rules))
 	for index, rule := range rules {
-		value := map[string]any{
-			"type": "field", "ruleTag": rule.RuleTag, "outboundTag": rule.OutboundTag,
-		}
+		value := map[string]any{"type": "field", "ruleTag": rule.RuleTag, "outboundTag": rule.OutboundTag}
 		if len(rule.Domains) > 0 {
 			value["domain"] = domainExpressions(rule.Domains)
 		}
@@ -230,25 +269,16 @@ func splitNetwork(value string) []string {
 	return strings.Split(value, ",")
 }
 
-func cloneStringMap(value map[string]string) map[string]string {
-	if len(value) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(value))
-	for key, item := range value {
-		cloned[key] = item
-	}
-	return cloned
-}
-
 func realityTunnelTag(serviceID string) string {
 	return "relayward/internal/reality-tunnel/" + serviceID
 }
-
 func realityTunnelAllowRuleTag(serviceID string) string {
 	return "relayward/internal/reality-sni-allow/" + serviceID
 }
-
 func realityTunnelBlockRuleTag(serviceID string) string {
 	return "relayward/internal/reality-sni-block/" + serviceID
+}
+func diagnosticInboundTag(lineID string) string { return "relayward/internal/egress-probe/" + lineID }
+func diagnosticRuleTag(lineID string) string {
+	return "relayward/internal/egress-probe-route/" + lineID
 }

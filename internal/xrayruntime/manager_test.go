@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -184,6 +185,60 @@ func TestManagerRestoresPreviousProcessAfterCandidateStartupFailure(t *testing.T
 	}
 }
 
+func TestManagerRestartsUnexpectedlyExitedProcess(t *testing.T) {
+	t.Parallel()
+	manager := testManager(t)
+	manager.restartDelay = 10 * time.Millisecond
+	configuration := testConfigurationValue(t, "0.0.0.0")
+	firstAPI := &trackingRuntimeAPI{}
+	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) { return firstAPI, nil }
+	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
+		t.Fatal(err)
+	}
+	authorizationID := "10000000-0000-4000-8000-000000000001"
+	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, testServiceID, true); err != nil {
+		t.Fatal(err)
+	}
+	blocks := []DynamicBlock{{
+		AuthorizationID: authorizationID, ServiceID: testServiceID, SourceIP: "192.0.2.20",
+		ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
+	}}
+	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil {
+		t.Fatal(err)
+	}
+
+	restoredAPI := &trackingRuntimeAPI{}
+	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) { return restoredAPI, nil }
+	manager.state.Lock()
+	previous := manager.process
+	manager.state.Unlock()
+	if err := syscall.Kill(-previous.command.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("terminate Xray process: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		manager.state.Lock()
+		current := manager.process
+		manager.state.Unlock()
+		if current != nil && current != previous && manager.GetStatus().Healthy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Xray process was not restarted: %+v", manager.GetStatus())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(restoredAPI.added) != 1 || len(restoredAPI.replacements) != 1 {
+		t.Fatalf("restored runtime = added %q, replacements %+v", restoredAPI.added, restoredAPI.replacements)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagerRejectsProcessThatExitsCleanlyDuringStartup(t *testing.T) {
 	t.Parallel()
 	manager := testManager(t)
@@ -259,10 +314,10 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	t.Parallel()
 	manager := testManager(t)
 	configuration := testConfigurationValue(t, "0.0.0.0")
-	configuration.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{{
+	configuration.AccessRules = []config.AccessRule{{
 		RuleID: "allow-example", DisplayName: "Allow example", Enabled: true,
-		Domains: []string{"domain:example.com"}, OutboundTag: config.RoutingOutboundDirect,
-	}}}
+		Domains: []string{"domain:example.com"}, Action: config.AccessActionEgress, EgressLineID: config.DefaultEgressLineID,
+	}}
 	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
 		t.Fatal(err)
 	}
@@ -287,12 +342,12 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.replacements) != 1 || len(api.replacements[0]) != 5 ||
+	if len(api.replacements) != 1 || len(api.replacements[0]) != 8 ||
 		api.replacements[0][0].RuleTag != xrayconfig.APIRuleTag ||
-		api.replacements[0][3].UserEmails[0] != email ||
-		api.replacements[0][3].InboundTags[0] != testServiceID ||
-		api.replacements[0][3].SourceIPs[0].Prefix.String() != "192.0.2.20/32" ||
-		api.replacements[0][4].RuleTag != "relayward-static-allow-example" {
+		api.replacements[0][4].UserEmails[0] != email ||
+		api.replacements[0][4].InboundTags[0] != testServiceID ||
+		api.replacements[0][4].SourceIPs[0].Prefix.String() != "192.0.2.20/32" ||
+		api.replacements[0][5].RuleTag != "relayward/access/allow-example" {
 		t.Fatalf("replacement = %+v", api.replacements)
 	}
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil || len(api.replacements) != 1 {
@@ -308,9 +363,9 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(restoredAPI.replacements) != 1 || len(restoredAPI.replacements[0]) != 5 ||
-		restoredAPI.replacements[0][3].SourceIPs[0].Prefix.String() != "192.0.2.20/32" ||
-		restoredAPI.replacements[0][4].RuleTag != "relayward-static-allow-example" {
+	if len(restoredAPI.replacements) != 1 || len(restoredAPI.replacements[0]) != 8 ||
+		restoredAPI.replacements[0][4].SourceIPs[0].Prefix.String() != "192.0.2.20/32" ||
+		restoredAPI.replacements[0][5].RuleTag != "relayward/access/allow-example" {
 		t.Fatalf("restored replacement = %+v", restoredAPI.replacements)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -323,15 +378,15 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	t.Parallel()
 	manager := testManager(t)
-	configuration, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
+	configuration, err := config.NewConfiguration("26.7.28", []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443,
+			Port:         24443,
 			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443,
+			Port:         28443,
 			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	})
@@ -388,7 +443,7 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 7 {
+	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 10 {
 		t.Fatalf("restored runtime = added %q, blocks %+v", restored.added, restored.replacements)
 	}
 	editable := config.Editable(configuration)
@@ -406,7 +461,7 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	mainState := manager.services[serviceKey(authorizationID, "reality-main")]
 	if backupState == nil || backupState.enabled || mainState == nil || !mainState.enabled ||
 		len(manager.blocks) != 1 || manager.blocks[0].ServiceID != "reality-main" || manager.blockRevision != 0 ||
-		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 4 {
+		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 7 {
 		t.Fatalf("state after service removal = backup %+v, main %+v, blocks %+v, runtime %+v", backupState, mainState, manager.blocks, removed)
 	}
 	if err := manager.ApplyServiceState(context.Background(), 4, 4, authorizationID, "reality-backup", false); err != nil {
@@ -444,9 +499,9 @@ func testConfigurationValue(t *testing.T, scenario string) config.Configuration 
 	case "127.0.0.4":
 		target = "exit.example.com:443"
 	}
-	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
+	value, err := config.NewConfiguration("26.7.28", []config.EditableService{{
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
-		Listen: "0.0.0.0", Port: 443,
+		Port:         24443,
 		VLESSReality: &config.EditableVLESSReality{Target: target},
 	}})
 	if err != nil {

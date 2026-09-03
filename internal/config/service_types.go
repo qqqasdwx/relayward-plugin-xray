@@ -15,30 +15,32 @@ import (
 
 var domainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`)
 
-const realityTunnelProxyProtocolVersion uint8 = 2
+type Service struct {
+	Type                string        `json:"type"`
+	Enabled             bool          `json:"enabled"`
+	ServiceID           string        `json:"service_id"`
+	DisplayName         string        `json:"display_name"`
+	Port                uint16        `json:"port"`
+	AcceptProxyProtocol bool          `json:"accept_proxy_protocol"`
+	VLESSReality        *VLESSReality `json:"vless_reality,omitempty"`
+	Shadowsocks         *Shadowsocks  `json:"shadowsocks,omitempty"`
+}
+
+type EditableService struct {
+	Type                string                `json:"type"`
+	Enabled             bool                  `json:"enabled"`
+	ServiceID           string                `json:"service_id"`
+	DisplayName         string                `json:"display_name"`
+	Port                uint16                `json:"port"`
+	AcceptProxyProtocol bool                  `json:"accept_proxy_protocol"`
+	VLESSReality        *EditableVLESSReality `json:"vless_reality,omitempty"`
+	Shadowsocks         *EditableShadowsocks  `json:"shadowsocks,omitempty"`
+}
 
 type VLESSReality struct {
-	Decryption            string                `json:"decryption"`
-	Encryption            string                `json:"encryption"`
-	TestSeed              []uint32              `json:"test_seed"`
-	Fallbacks             []VLESSFallback       `json:"fallbacks"`
-	Show                  bool                  `json:"show"`
-	Xver                  uint8                 `json:"xver"`
-	Target                string                `json:"target"`
-	ServerNames           []string              `json:"server_names"`
-	PrivateKey            string                `json:"private_key"`
-	ShortIDs              []string              `json:"short_ids"`
-	MinClientVersion      string                `json:"min_client_version"`
-	MaxClientVersion      string                `json:"max_client_version"`
-	MaxTimeDiff           uint64                `json:"max_time_diff"`
-	MLDSA65Seed           string                `json:"mldsa65_seed"`
-	MLDSA65Verify         string                `json:"mldsa65_verify"`
-	MasterKeyLog          string                `json:"master_key_log"`
-	LimitFallbackUpload   *RealityLimitFallback `json:"limit_fallback_upload,omitempty"`
-	LimitFallbackDownload *RealityLimitFallback `json:"limit_fallback_download,omitempty"`
-	Flow                  string                `json:"flow"`
-	Fingerprint           string                `json:"fingerprint"`
-	SpiderX               string                `json:"spider_x"`
+	Target     string `json:"target"`
+	PrivateKey string `json:"private_key"`
+	ShortID    string `json:"short_id"`
 }
 
 type EditableVLESSReality struct {
@@ -48,170 +50,104 @@ type EditableVLESSReality struct {
 const (
 	ShadowsocksMethod2022AES128 = "2022-blake3-aes-128-gcm"
 	ShadowsocksMethod2022AES256 = "2022-blake3-aes-256-gcm"
-	ShadowsocksMethodAES128     = "aes-128-gcm"
-	ShadowsocksMethodAES256     = "aes-256-gcm"
-	ShadowsocksMethodChaCha20   = "chacha20-ietf-poly1305"
-	ShadowsocksMethodXChaCha20  = "xchacha20-ietf-poly1305"
-	ShadowsocksNetworkTCP       = "tcp"
-	ShadowsocksNetworkUDP       = "udp"
-	ShadowsocksNetworkTCPUDP    = "tcp,udp"
 )
 
 type Shadowsocks struct {
 	Method    string `json:"method"`
-	Network   string `json:"network"`
 	ServerKey string `json:"server_key"`
-	IVCheck   bool   `json:"iv_check"`
 }
 
 type EditableShadowsocks struct {
-	Method    string `json:"method"`
-	Network   string `json:"network"`
-	ServerKey string `json:"server_key"`
-	IVCheck   bool   `json:"iv_check"`
-}
-
-type ServiceTypeCapabilities struct {
-	XrayInbound         bool     `json:"xray_inbound"`
-	ServiceControl      bool     `json:"service_control"`
-	TrafficCounters     bool     `json:"traffic_counters"`
-	RecentActivity      bool     `json:"recent_activity"`
-	DynamicBlocking     bool     `json:"dynamic_blocking"`
-	SubscriptionFormats []string `json:"subscription_formats"`
+	Method string `json:"method"`
 }
 
 type ServiceTypeDefinition struct {
-	ID           string                  `json:"id"`
-	DisplayName  string                  `json:"display_name"`
-	Capabilities ServiceTypeCapabilities `json:"capabilities"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
 }
 
 var serviceTypeDefinitions = []ServiceTypeDefinition{
-	{
-		ID: ServiceTypeVLESSReality, DisplayName: "VLESS REALITY",
-		Capabilities: ServiceTypeCapabilities{
-			XrayInbound: true, ServiceControl: true, TrafficCounters: true,
-			RecentActivity: true, DynamicBlocking: true,
-			SubscriptionFormats: []string{"base64", "mihomo", "sing-box"},
-		},
-	},
-	{
-		ID: ServiceTypeShadowsocks, DisplayName: "Shadowsocks",
-		Capabilities: ServiceTypeCapabilities{
-			XrayInbound: true, ServiceControl: true, TrafficCounters: true,
-			RecentActivity: true, DynamicBlocking: true,
-			SubscriptionFormats: []string{"base64", "mihomo", "sing-box"},
-		},
-	},
+	{ID: ServiceTypeVLESSReality, DisplayName: "VLESS + RAW + REALITY + Vision"},
+	{ID: ServiceTypeShadowsocks, DisplayName: "Shadowsocks 2022"},
 }
 
 func SupportedServiceTypes() []ServiceTypeDefinition {
-	values := make([]ServiceTypeDefinition, len(serviceTypeDefinitions))
-	copy(values, serviceTypeDefinitions)
-	for index := range values {
-		values[index].Capabilities.SubscriptionFormats = append(
-			[]string(nil), values[index].Capabilities.SubscriptionFormats...,
-		)
-	}
-	return values
+	return append([]ServiceTypeDefinition(nil), serviceTypeDefinitions...)
 }
 
 func ServiceTypeDefinitionByID(id string) (ServiceTypeDefinition, bool) {
 	for _, definition := range serviceTypeDefinitions {
 		if definition.ID == id {
-			definition.Capabilities.SubscriptionFormats = append(
-				[]string(nil), definition.Capabilities.SubscriptionFormats...,
-			)
 			return definition, true
 		}
 	}
 	return ServiceTypeDefinition{}, false
 }
 
-func editableVLESSReality(value *VLESSReality) *EditableVLESSReality {
-	if value == nil {
-		return nil
+func editableService(value Service) EditableService {
+	result := EditableService{
+		Type: value.Type, Enabled: value.Enabled, ServiceID: value.ServiceID,
+		DisplayName: value.DisplayName, Port: value.Port,
+		AcceptProxyProtocol: value.AcceptProxyProtocol,
 	}
-	return &EditableVLESSReality{Target: value.Target}
+	if value.VLESSReality != nil {
+		result.VLESSReality = &EditableVLESSReality{Target: value.VLESSReality.Target}
+	}
+	if value.Shadowsocks != nil {
+		result.Shadowsocks = &EditableShadowsocks{Method: value.Shadowsocks.Method}
+	}
+	return result
 }
 
-func editableShadowsocks(value *Shadowsocks) *EditableShadowsocks {
-	if value == nil {
-		return nil
-	}
-	return &EditableShadowsocks{
-		Method: value.Method, Network: value.Network, ServerKey: value.ServerKey, IVCheck: value.IVCheck,
-	}
-}
-
-func mergeServiceType(existing Service, sameType bool, editable EditableService) (Service, error) {
+func mergeService(existing Service, sameType bool, editable EditableService) (Service, error) {
 	if _, exists := ServiceTypeDefinitionByID(editable.Type); !exists {
 		return Service{}, fmt.Errorf("unsupported service type %q", editable.Type)
 	}
+	result := Service{
+		Type: editable.Type, Enabled: editable.Enabled, ServiceID: editable.ServiceID,
+		DisplayName: editable.DisplayName, Port: editable.Port,
+		AcceptProxyProtocol: editable.AcceptProxyProtocol,
+	}
 	switch editable.Type {
 	case ServiceTypeVLESSReality:
-		if editable.VLESSReality == nil {
+		if editable.VLESSReality == nil || editable.Shadowsocks != nil {
 			return Service{}, fmt.Errorf("vless_reality: configuration is required")
 		}
-		targetHost, _, err := parseRealityTarget(editable.VLESSReality.Target)
-		if err != nil {
+		if _, _, err := parseRealityTarget(editable.VLESSReality.Target); err != nil {
 			return Service{}, fmt.Errorf("vless_reality.target: %w", err)
 		}
-		privateKey := ""
-		var shortIDs []string
 		if sameType && existing.VLESSReality != nil {
-			privateKey = existing.VLESSReality.PrivateKey
-			shortIDs = append([]string(nil), existing.VLESSReality.ShortIDs...)
+			result.VLESSReality = cloneVLESSReality(existing.VLESSReality)
+			result.VLESSReality.Target = editable.VLESSReality.Target
+			return result, nil
 		}
-		if privateKey == "" || len(shortIDs) != 1 {
-			privateKey, shortIDs, err = newVLESSRealitySecrets()
-			if err != nil {
-				return Service{}, err
-			}
+		privateKey, shortID, err := newVLESSRealitySecrets()
+		if err != nil {
+			return Service{}, err
 		}
-		existing.VLESSReality = &VLESSReality{
-			Decryption: "none", Encryption: "none",
-			Xver:        realityTunnelProxyProtocolVersion,
-			Target:      editable.VLESSReality.Target,
-			ServerNames: []string{targetHost},
-			PrivateKey:  privateKey, ShortIDs: shortIDs,
-			MinClientVersion: "1.0.0",
-			Flow:             VLESSVisionFlow,
-			Fingerprint:      "chrome", SpiderX: "/",
-		}
-		existing.Shadowsocks = nil
-		return existing, nil
+		result.VLESSReality = &VLESSReality{Target: editable.VLESSReality.Target, PrivateKey: privateKey, ShortID: shortID}
 	case ServiceTypeShadowsocks:
-		if editable.Shadowsocks == nil {
+		if editable.Shadowsocks == nil || editable.VLESSReality != nil {
 			return Service{}, fmt.Errorf("shadowsocks: configuration is required")
 		}
 		method := editable.Shadowsocks.Method
 		if method == "" {
 			method = ShadowsocksMethod2022AES256
 		}
-		network := editable.Shadowsocks.Network
-		if network == "" {
-			network = ShadowsocksNetworkTCPUDP
+		serverKey := ""
+		if sameType && existing.Shadowsocks != nil && existing.Shadowsocks.Method == method {
+			serverKey = existing.Shadowsocks.ServerKey
 		}
-		serverKey := editable.Shadowsocks.ServerKey
-		if IsShadowsocks2022(method) && !validShadowsocksKey(serverKey, ShadowsocksKeyBytes(method)) {
+		if !validShadowsocksKey(serverKey, ShadowsocksKeyBytes(method)) {
 			var err error
 			serverKey, err = newShadowsocksKey(ShadowsocksKeyBytes(method))
 			if err != nil {
 				return Service{}, err
 			}
 		}
-		if !IsShadowsocks2022(method) {
-			serverKey = ""
-		}
-		existing.VLESSReality = nil
-		existing.Shadowsocks = &Shadowsocks{
-			Method: method, Network: network, ServerKey: serverKey, IVCheck: editable.Shadowsocks.IVCheck,
-		}
-		return existing, nil
-	default:
-		return Service{}, fmt.Errorf("unsupported service type %q", editable.Type)
+		result.Shadowsocks = &Shadowsocks{Method: method, ServerKey: serverKey}
 	}
+	return result, nil
 }
 
 func validateServiceType(service Service, field string) error {
@@ -231,39 +167,35 @@ func validateServiceType(service Service, field string) error {
 	}
 }
 
+func validateVLESSReality(value VLESSReality, field string) error {
+	if _, _, err := parseRealityTarget(value.Target); err != nil {
+		return fmt.Errorf("%s.target: %w", field, err)
+	}
+	if _, err := RealityPublicKey(value.PrivateKey); err != nil {
+		return fmt.Errorf("%s.private_key: %w", field, err)
+	}
+	decoded, err := hex.DecodeString(value.ShortID)
+	if err != nil || len(decoded) != 8 || value.ShortID != strings.ToLower(value.ShortID) {
+		return fmt.Errorf("%s.short_id: must contain 16 lowercase hexadecimal characters", field)
+	}
+	return nil
+}
+
 func validateShadowsocks(value Shadowsocks, field string) error {
 	if !IsShadowsocksMethod(value.Method) {
 		return fmt.Errorf("%s.method: unsupported Shadowsocks method", field)
 	}
-	switch value.Network {
-	case ShadowsocksNetworkTCP, ShadowsocksNetworkUDP, ShadowsocksNetworkTCPUDP:
-	default:
-		return fmt.Errorf("%s.network: must be tcp, udp, or tcp,udp", field)
-	}
-	if IsShadowsocks2022(value.Method) {
-		if !validShadowsocksKey(value.ServerKey, ShadowsocksKeyBytes(value.Method)) {
-			return fmt.Errorf("%s.server_key: must be a %d-byte padded base64 key", field, ShadowsocksKeyBytes(value.Method))
-		}
-	} else if value.ServerKey != "" {
-		return fmt.Errorf("%s.server_key: only Shadowsocks 2022 uses a server key", field)
+	if !validShadowsocksKey(value.ServerKey, ShadowsocksKeyBytes(value.Method)) {
+		return fmt.Errorf("%s.server_key: must be a %d-byte padded base64 key", field, ShadowsocksKeyBytes(value.Method))
 	}
 	return nil
 }
 
 func IsShadowsocksMethod(method string) bool {
-	switch method {
-	case ShadowsocksMethod2022AES128, ShadowsocksMethod2022AES256,
-		ShadowsocksMethodAES128, ShadowsocksMethodAES256,
-		ShadowsocksMethodChaCha20, ShadowsocksMethodXChaCha20:
-		return true
-	default:
-		return false
-	}
-}
-
-func IsShadowsocks2022(method string) bool {
 	return method == ShadowsocksMethod2022AES128 || method == ShadowsocksMethod2022AES256
 }
+
+func IsShadowsocks2022(method string) bool { return IsShadowsocksMethod(method) }
 
 func ShadowsocksKeyBytes(method string) int {
 	if method == ShadowsocksMethod2022AES128 {
@@ -275,92 +207,8 @@ func ShadowsocksKeyBytes(method string) int {
 	return 0
 }
 
-func ShadowsocksCipherType(method string) (int32, bool) {
-	switch method {
-	case ShadowsocksMethodAES128:
-		return 5, true
-	case ShadowsocksMethodAES256:
-		return 6, true
-	case ShadowsocksMethodChaCha20:
-		return 7, true
-	case ShadowsocksMethodXChaCha20:
-		return 8, true
-	default:
-		return 0, false
-	}
-}
-
 func ShadowsocksClientPassword(value Shadowsocks, userPassword string) string {
-	if IsShadowsocks2022(value.Method) {
-		return value.ServerKey + ":" + userPassword
-	}
-	return userPassword
-}
-
-func validShadowsocksKey(value string, size int) bool {
-	raw, err := base64.StdEncoding.DecodeString(value)
-	return err == nil && len(raw) == size && base64.StdEncoding.EncodeToString(raw) == value
-}
-
-func newShadowsocksKey(size int) (string, error) {
-	value := make([]byte, size)
-	if _, err := rand.Read(value); err != nil {
-		return "", fmt.Errorf("generate Shadowsocks server key: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(value), nil
-}
-
-func validateVLESSReality(value VLESSReality, field string) error {
-	targetHost, _, err := parseRealityTarget(value.Target)
-	if err != nil {
-		return fmt.Errorf("%s.target: %w", field, err)
-	}
-	if len(value.ServerNames) != 1 || value.ServerNames[0] != targetHost {
-		return fmt.Errorf("%s.server_names: must contain only the camouflage target domain", field)
-	}
-	if _, err := RealityPublicKey(value.PrivateKey); err != nil {
-		return fmt.Errorf("%s.private_key: %w", field, err)
-	}
-	if len(value.ShortIDs) != 1 {
-		return fmt.Errorf("%s.short_ids: must contain exactly one value", field)
-	}
-	decodedShortID, err := hex.DecodeString(value.ShortIDs[0])
-	if err != nil || len(decodedShortID) != 8 || value.ShortIDs[0] != strings.ToLower(value.ShortIDs[0]) {
-		return fmt.Errorf("%s.short_ids[0]: must contain 16 lowercase hexadecimal characters", field)
-	}
-	if value.Decryption != "none" || value.Encryption != "none" {
-		return fmt.Errorf("%s.decryption and encryption: must both be none", field)
-	}
-	if len(value.TestSeed) != 0 {
-		return fmt.Errorf("%s.test_seed: is managed by Xray", field)
-	}
-	if len(value.Fallbacks) != 0 {
-		return fmt.Errorf("%s.fallbacks: are not supported", field)
-	}
-	if value.Show || value.Xver != realityTunnelProxyProtocolVersion {
-		return fmt.Errorf("%s.show and xver: are fixed to false and PROXY Protocol v2", field)
-	}
-	if value.MinClientVersion != "1.0.0" || value.MaxClientVersion != "" || value.MaxTimeDiff != 0 {
-		return fmt.Errorf("%s: REALITY client version and time limits are managed by the plugin", field)
-	}
-	if value.MLDSA65Seed != "" || value.MLDSA65Verify != "" || value.MasterKeyLog != "" {
-		return fmt.Errorf("%s: ML-DSA-65 and master key logging are not supported", field)
-	}
-	if value.LimitFallbackUpload != nil || value.LimitFallbackDownload != nil {
-		return fmt.Errorf("%s: fallback limits are managed by the plugin", field)
-	}
-	if value.Flow != "" && value.Flow != VLESSVisionFlow {
-		return fmt.Errorf("%s.flow: unsupported flow", field)
-	}
-	switch value.Fingerprint {
-	case "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized", "randomizednoalpn", "unsafe":
-	default:
-		return fmt.Errorf("%s.fingerprint: unsupported fingerprint", field)
-	}
-	if value.SpiderX == "" || !strings.HasPrefix(value.SpiderX, "/") || strings.ContainsAny(value.SpiderX, "\r\n") {
-		return fmt.Errorf("%s.spider_x: must start with /", field)
-	}
-	return nil
+	return value.ServerKey + ":" + userPassword
 }
 
 func parseRealityTarget(value string) (string, uint16, error) {
@@ -393,18 +241,37 @@ func RealityPublicKey(privateKey string) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), nil
 }
 
-func newVLESSRealitySecrets() (string, []string, error) {
+func newVLESSRealitySecrets() (string, string, error) {
 	privateKey := make([]byte, 32)
 	shortID := make([]byte, 8)
 	for _, value := range [][]byte{privateKey, shortID} {
 		if _, err := rand.Read(value); err != nil {
-			return "", nil, fmt.Errorf("generate configuration secret: %w", err)
+			return "", "", fmt.Errorf("generate configuration secret: %w", err)
 		}
 	}
 	privateKey[0] &= 248
 	privateKey[31] &= 127
 	privateKey[31] |= 64
-	return base64.RawURLEncoding.EncodeToString(privateKey), []string{hex.EncodeToString(shortID)}, nil
+	return base64.RawURLEncoding.EncodeToString(privateKey), hex.EncodeToString(shortID), nil
+}
+
+func newShadowsocksKey(size int) (string, error) {
+	if size == 0 {
+		return "", fmt.Errorf("unsupported Shadowsocks method")
+	}
+	value := make([]byte, size)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate Shadowsocks server key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(value), nil
+}
+
+func validShadowsocksKey(value string, size int) bool {
+	if size == 0 {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(value)
+	return err == nil && len(raw) == size && base64.StdEncoding.EncodeToString(raw) == value
 }
 
 func cloneVLESSReality(value *VLESSReality) *VLESSReality {
@@ -412,24 +279,10 @@ func cloneVLESSReality(value *VLESSReality) *VLESSReality {
 		return nil
 	}
 	clone := *value
-	clone.ServerNames = append([]string(nil), value.ServerNames...)
-	clone.ShortIDs = append([]string(nil), value.ShortIDs...)
-	clone.TestSeed = append([]uint32(nil), value.TestSeed...)
-	clone.Fallbacks = append([]VLESSFallback(nil), value.Fallbacks...)
-	clone.LimitFallbackUpload = cloneRealityLimitFallback(value.LimitFallbackUpload)
-	clone.LimitFallbackDownload = cloneRealityLimitFallback(value.LimitFallbackDownload)
 	return &clone
 }
 
 func cloneShadowsocks(value *Shadowsocks) *Shadowsocks {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneRealityLimitFallback(value *RealityLimitFallback) *RealityLimitFallback {
 	if value == nil {
 		return nil
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
@@ -14,6 +15,8 @@ import (
 const (
 	realityTunnelPortStart       = 49152
 	realityTunnelPortCount       = 16384
+	diagnosticPortStart          = 30000
+	diagnosticPortCount          = 10000
 	realityMinimumClientVersion  = "1.0.0"
 	realityFallbackAfterBytes    = 10 * 1024 * 1024
 	realityFallbackBytesPerSec   = 1024 * 1024
@@ -32,137 +35,117 @@ func Render(value config.Configuration) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	routingNeedsSniffing := NeedsSniffing(value)
 	tunnelPorts, err := allocateRealityTunnelPorts(value)
 	if err != nil {
 		return nil, err
 	}
+	diagnosticPorts, err := allocateDiagnosticPorts(value)
+	if err != nil {
+		return nil, err
+	}
 	inbounds := []any{map[string]any{
-		"tag": "relayward-api", "listen": "127.0.0.1", "port": value.APIPort,
+		"tag": APIRuleTag, "listen": "127.0.0.1", "port": value.APIPort,
 		"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 	}}
+	for _, line := range value.EgressLines {
+		if !line.Enabled {
+			continue
+		}
+		inbounds = append(inbounds, map[string]any{
+			"tag": diagnosticInboundTag(line.LineID), "listen": "127.0.0.1", "port": diagnosticPorts[line.LineID],
+			"protocol": "socks", "settings": map[string]any{"auth": "noauth", "udp": false},
+		})
+	}
 	for _, service := range value.Services {
 		if !service.Enabled {
 			continue
 		}
-		serviceInbounds, err := renderService(value, service, routingNeedsSniffing, tunnelPorts)
+		serviceInbounds, err := renderService(value, service, tunnelPorts)
 		if err != nil {
 			return nil, err
 		}
 		inbounds = append(inbounds, serviceInbounds...)
 	}
-	routing := map[string]any{"rules": renderRoutingRules(routingRules)}
-	if value.DNS.Enabled {
-		routing["domainStrategy"] = "IPIfNonMatch"
+	outbounds, err := renderOutbounds(value.EgressLines)
+	if err != nil {
+		return nil, err
 	}
 	result := map[string]any{
-		"log": map[string]any{"loglevel": "warning"},
-		"api": map[string]any{"tag": "relayward-api", "services": []string{
-			"HandlerService", "RoutingService", "StatsService",
-		}},
+		"log":       map[string]any{"loglevel": "warning"},
+		"api":       map[string]any{"tag": APIRuleTag, "services": []string{"HandlerService", "RoutingService", "StatsService"}},
+		"dns":       map[string]any{"servers": []string{"localhost"}, "queryStrategy": "UseIP"},
 		"inbounds":  inbounds,
-		"outbounds": renderOutbounds(value.Outbounds),
+		"outbounds": outbounds,
 		"policy": map[string]any{"levels": map[string]any{"0": map[string]any{
 			"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true,
 		}}},
-		"routing": routing,
+		"routing": map[string]any{"domainStrategy": "IPIfNonMatch", "rules": renderRoutingRules(routingRules)},
 		"stats":   map[string]any{},
-	}
-	if value.DNS.Enabled {
-		result["dns"] = renderDNS(value.DNS)
 	}
 	return json.Marshal(result)
 }
 
-func renderOutbounds(outbounds []config.Outbound) []any {
-	result := make([]any, len(outbounds))
-	for index, outbound := range outbounds {
-		settings := map[string]any{}
-		switch outbound.Protocol {
-		case config.OutboundProtocolFreedom:
-			settings = renderFreedomOutbound(*outbound.Freedom)
-		case config.OutboundProtocolBlackhole:
-			if outbound.Blackhole.ResponseType != "" {
-				settings["response"] = map[string]any{"type": outbound.Blackhole.ResponseType}
-			}
+func renderOutbounds(lines []config.EgressLine) ([]any, error) {
+	result := make([]any, 0, len(lines)+2)
+	for _, line := range lines {
+		if !line.Enabled {
+			continue
 		}
-		result[index] = map[string]any{
-			"tag": outbound.Tag, "protocol": outbound.Protocol, "settings": settings,
+		outbound, err := renderEgressLine(line)
+		if err != nil {
+			return nil, err
 		}
+		result = append(result, outbound)
 	}
-	return result
+	result = append(result,
+		map[string]any{"tag": SystemDirectOutboundTag, "protocol": "freedom", "settings": map[string]any{"domainStrategy": "UseIP"}},
+		map[string]any{"tag": BlockedOutboundTag, "protocol": "blackhole", "settings": map[string]any{}},
+	)
+	return result, nil
 }
 
-func renderFreedomOutbound(value config.FreedomOutboundSettings) map[string]any {
-	settings := map[string]any{}
-	if value.DomainStrategy != "" {
-		settings["domainStrategy"] = value.DomainStrategy
-	}
-	if value.Redirect != "" {
-		settings["redirect"] = value.Redirect
-	}
-	if value.UserLevel != 0 {
-		settings["userLevel"] = value.UserLevel
-	}
-	if value.ProxyProtocol != 0 {
-		settings["proxyProtocol"] = value.ProxyProtocol
-	}
-	if value.Fragment != nil {
-		fragment := map[string]any{}
-		for name, item := range map[string]string{
-			"packets": value.Fragment.Packets, "length": value.Fragment.Length,
-			"interval": value.Fragment.Interval, "maxSplit": value.Fragment.MaxSplit,
-		} {
-			if item != "" {
-				fragment[name] = item
+func renderEgressLine(line config.EgressLine) (any, error) {
+	value := map[string]any{"tag": config.EgressOutboundTag(line.LineID)}
+	switch line.Type {
+	case config.EgressTypeDirect:
+		value["protocol"] = "freedom"
+		settings := map[string]any{"domainStrategy": "UseIP"}
+		if line.Direct.SendThrough != "" {
+			value["sendThrough"] = line.Direct.SendThrough
+			address, _ := netip.ParseAddr(line.Direct.SendThrough)
+			if address.Is4() {
+				settings["domainStrategy"] = "UseIPv4"
+			} else {
+				settings["domainStrategy"] = "UseIPv6"
 			}
 		}
-		settings["fragment"] = fragment
-	}
-	if len(value.Noises) > 0 {
-		noises := make([]any, len(value.Noises))
-		for index, noise := range value.Noises {
-			noises[index] = map[string]any{
-				"type": noise.Type, "packet": noise.Packet, "delay": noise.Delay, "applyTo": noise.ApplyTo,
-			}
+		value["settings"] = settings
+	case config.EgressTypeSOCKS5:
+		value["protocol"] = "socks"
+		settings := map[string]any{"address": line.SOCKS5.Address, "port": line.SOCKS5.Port}
+		if line.SOCKS5.Username != "" {
+			settings["user"] = line.SOCKS5.Username
+			settings["pass"] = line.SOCKS5.Password
 		}
-		settings["noises"] = noises
-	}
-	if len(value.FinalRules) > 0 {
-		rules := make([]any, len(value.FinalRules))
-		for index, rule := range value.FinalRules {
-			item := map[string]any{"action": rule.Action}
-			if rule.Network != "" {
-				item["network"] = rule.Network
-			}
-			if rule.Port != "" {
-				item["port"] = rule.Port
-			}
-			if len(rule.IPs) > 0 {
-				item["ip"] = rule.IPs
-			}
-			if rule.BlockDelay != "" {
-				item["blockDelay"] = rule.BlockDelay
-			}
-			rules[index] = item
+		value["settings"] = settings
+	case config.EgressTypeShadowsocks:
+		value["protocol"] = "shadowsocks"
+		value["settings"] = map[string]any{
+			"address": line.Shadowsocks.Address, "port": line.Shadowsocks.Port,
+			"method": line.Shadowsocks.Method, "password": line.Shadowsocks.Password,
 		}
-		settings["finalRules"] = rules
+	default:
+		return nil, fmt.Errorf("unsupported egress type %q", line.Type)
 	}
-	return settings
+	return value, nil
 }
 
-func renderService(
-	configuration config.Configuration,
-	service config.Service,
-	routingNeedsSniffing bool,
-	tunnelPorts map[string]uint16,
-) ([]any, error) {
+func renderService(configuration config.Configuration, service config.Service, tunnelPorts map[string]uint16) ([]any, error) {
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
-		inbounds, err := renderVLESSReality(service, tunnelPorts[service.ServiceID])
-		return inbounds, err
+		return renderVLESSReality(service, tunnelPorts[service.ServiceID])
 	case config.ServiceTypeShadowsocks:
-		inbound, err := renderShadowsocks(configuration, service, routingNeedsSniffing)
+		inbound, err := renderShadowsocks(configuration, service)
 		if err != nil {
 			return nil, err
 		}
@@ -172,41 +155,20 @@ func renderService(
 	}
 }
 
-func renderShadowsocks(configuration config.Configuration, service config.Service, routingNeedsSniffing bool) (any, error) {
-	shadowsocks := service.Shadowsocks
-	settings := map[string]any{
-		"clients": []any{},
-		"network": shadowsocks.Network,
+func renderShadowsocks(configuration config.Configuration, service config.Service) (any, error) {
+	settings := service.Shadowsocks
+	bootstrapKey, err := config.DeriveShadowsocksPassword(configuration.CredentialSeed, "bootstrap", service.ServiceID, settings.Method)
+	if err != nil {
+		return nil, err
 	}
-	if config.IsShadowsocks2022(shadowsocks.Method) {
-		bootstrapKey, err := config.DeriveShadowsocksPassword(
-			configuration.CredentialSeed, "bootstrap", service.ServiceID, shadowsocks.Method,
-		)
-		if err != nil {
-			return nil, err
-		}
-		settings["method"] = shadowsocks.Method
-		settings["password"] = shadowsocks.ServerKey
-		settings["clients"] = []any{map[string]any{
-			"email":    "relayward:bootstrap:" + service.ServiceID,
-			"password": bootstrapKey,
-		}}
-	}
-	inbound := map[string]any{
-		"tag": service.ServiceID, "listen": service.Listen, "port": service.Port,
-		"protocol": "shadowsocks", "settings": settings,
-	}
-	if service.Sockopt != nil {
-		inbound["streamSettings"] = map[string]any{"sockopt": renderSocketSettings(*service.Sockopt)}
-	}
-	if service.Sniffing.Enabled {
-		inbound["sniffing"] = renderSniffing(service.Sniffing)
-	} else if routingNeedsSniffing {
-		inbound["sniffing"] = renderSniffing(config.Sniffing{
-			Enabled: true, DestOverride: []string{"http", "tls", "quic"}, RouteOnly: true,
-		})
-	}
-	return inbound, nil
+	return map[string]any{
+		"tag": service.ServiceID, "port": service.Port, "protocol": "shadowsocks",
+		"settings": map[string]any{
+			"method": settings.Method, "password": settings.ServerKey, "network": "tcp,udp",
+			"clients": []any{map[string]any{"email": config.UserEmail("bootstrap", service.ServiceID), "password": bootstrapKey}},
+		},
+		"sniffing": managedSniffing(),
+	}, nil
 }
 
 func renderVLESSReality(service config.Service, tunnelPort uint16) ([]any, error) {
@@ -215,50 +177,42 @@ func renderVLESSReality(service config.Service, tunnelPort uint16) ([]any, error
 	if err != nil {
 		return nil, fmt.Errorf("render VLESS REALITY service %q: %w", service.ServiceID, err)
 	}
-	realitySettings := map[string]any{
-		"target":      net.JoinHostPort("127.0.0.1", strconv.Itoa(int(tunnelPort))),
-		"xver":        reality.Xver,
-		"serverNames": []string{targetHost}, "privateKey": reality.PrivateKey,
-		"shortIds":              []string{reality.ShortIDs[0]},
-		"minClientVer":          realityMinimumClientVersion,
-		"limitFallbackUpload":   realityFallbackLimit(),
-		"limitFallbackDownload": realityFallbackLimit(),
-	}
 	streamSettings := map[string]any{
-		"method": "raw", "security": "reality", "realitySettings": realitySettings,
+		"method": "raw", "security": "reality",
+		"realitySettings": map[string]any{
+			"target": net.JoinHostPort("127.0.0.1", strconv.Itoa(int(tunnelPort))), "xver": 2,
+			"serverNames": []string{targetHost}, "privateKey": reality.PrivateKey,
+			"shortIds": []string{reality.ShortID}, "minClientVer": realityMinimumClientVersion,
+			"limitFallbackUpload": realityFallbackLimit(), "limitFallbackDownload": realityFallbackLimit(),
+		},
 	}
-	if service.TCP.AcceptProxyProtocol {
+	if service.AcceptProxyProtocol {
 		streamSettings["rawSettings"] = map[string]any{"acceptProxyProtocol": true}
 	}
 	vlessInbound := map[string]any{
-		"tag": service.ServiceID, "listen": "0.0.0.0", "port": service.Port, "protocol": "vless",
-		"settings":       map[string]any{"decryption": "none"},
-		"streamSettings": streamSettings,
-		"sniffing": map[string]any{
-			"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true,
-		},
+		"tag": service.ServiceID, "port": service.Port, "protocol": "vless",
+		"settings": map[string]any{"decryption": "none"}, "streamSettings": streamSettings,
+		"sniffing": managedSniffing(),
 	}
 	tunnelInbound := map[string]any{
 		"tag": realityTunnelTag(service.ServiceID), "listen": "127.0.0.1", "port": tunnelPort,
 		"protocol": "tunnel",
-		"settings": map[string]any{
-			"rewriteAddress": targetHost, "rewritePort": targetPort, "allowedNetwork": "tcp",
-		},
-		"sniffing": map[string]any{
-			"enabled": true, "destOverride": []string{"tls"}, "routeOnly": true,
-		},
+		"settings": map[string]any{"rewriteAddress": targetHost, "rewritePort": targetPort, "allowedNetwork": "tcp"},
+		"sniffing": map[string]any{"enabled": true, "destOverride": []string{"tls"}, "routeOnly": true},
 		"streamSettings": map[string]any{
-			"method": "raw", "security": "none",
-			"rawSettings": map[string]any{"acceptProxyProtocol": true},
+			"method": "raw", "security": "none", "rawSettings": map[string]any{"acceptProxyProtocol": true},
 		},
 	}
 	return []any{vlessInbound, tunnelInbound}, nil
 }
 
+func managedSniffing() map[string]any {
+	return map[string]any{"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true}
+}
+
 func realityFallbackLimit() map[string]any {
 	return map[string]any{
-		"afterBytes":       realityFallbackAfterBytes,
-		"bytesPerSec":      realityFallbackBytesPerSec,
+		"afterBytes": realityFallbackAfterBytes, "bytesPerSec": realityFallbackBytesPerSec,
 		"burstBytesPerSec": realityFallbackBurstBytesSec,
 	}
 }
@@ -275,110 +229,71 @@ func splitRealityTarget(target string) (string, uint16, error) {
 	return host, uint16(port), nil
 }
 
+func realityServerName(service config.Service) string {
+	host, _, _ := splitRealityTarget(service.VLESSReality.Target)
+	return host
+}
+
 func allocateRealityTunnelPorts(configuration config.Configuration) (map[string]uint16, error) {
+	used := reservedPorts(configuration)
+	return allocatePorts(configuration.CredentialSeed, "reality-tunnel", realityTunnelPortStart, realityTunnelPortCount,
+		configuration.Services, func(service config.Service) (string, bool) {
+			return service.ServiceID, service.Type == config.ServiceTypeVLESSReality
+		}, used)
+}
+
+func allocateDiagnosticPorts(configuration config.Configuration) (map[string]uint16, error) {
+	used := reservedPorts(configuration)
+	values := make([]config.Service, len(configuration.EgressLines))
+	for index, line := range configuration.EgressLines {
+		values[index] = config.Service{ServiceID: line.LineID, Enabled: line.Enabled}
+	}
+	return allocatePorts(configuration.CredentialSeed, "egress-probe", diagnosticPortStart, diagnosticPortCount,
+		values, func(value config.Service) (string, bool) { return value.ServiceID, value.Enabled }, used)
+}
+
+func DiagnosticPort(configuration config.Configuration, lineID string) (uint16, bool, error) {
+	ports, err := allocateDiagnosticPorts(configuration)
+	if err != nil {
+		return 0, false, err
+	}
+	port, exists := ports[lineID]
+	return port, exists, nil
+}
+
+func reservedPorts(configuration config.Configuration) map[uint16]struct{} {
 	used := map[uint16]struct{}{configuration.APIPort: {}}
 	for _, service := range configuration.Services {
 		used[service.Port] = struct{}{}
 	}
+	return used
+}
+
+func allocatePorts(seed, namespace string, start, count int, values []config.Service,
+	identity func(config.Service) (string, bool), used map[uint16]struct{},
+) (map[string]uint16, error) {
 	ports := make(map[string]uint16)
-	for _, service := range configuration.Services {
-		if service.Type != config.ServiceTypeVLESSReality {
+	for _, value := range values {
+		id, include := identity(value)
+		if !include {
 			continue
 		}
-		digest := sha256.Sum256([]byte(configuration.CredentialSeed + "\x00" + service.ServiceID))
-		start := int(binary.BigEndian.Uint16(digest[:2])) % realityTunnelPortCount
+		digest := sha256.Sum256([]byte(seed + "\x00" + namespace + "\x00" + id))
+		initial := int(binary.BigEndian.Uint16(digest[:2])) % count
 		allocated := false
-		for offset := 0; offset < realityTunnelPortCount; offset++ {
-			port := uint16(realityTunnelPortStart + (start+offset)%realityTunnelPortCount)
+		for offset := 0; offset < count; offset++ {
+			port := uint16(start + (initial+offset)%count)
 			if _, exists := used[port]; exists {
 				continue
 			}
 			used[port] = struct{}{}
-			ports[service.ServiceID] = port
+			ports[id] = port
 			allocated = true
 			break
 		}
 		if !allocated {
-			return nil, fmt.Errorf("allocate REALITY tunnel port for service %q", service.ServiceID)
+			return nil, fmt.Errorf("allocate internal port for %q", id)
 		}
 	}
 	return ports, nil
-}
-
-func renderSocketSettings(value config.SocketSettings) map[string]any {
-	settings := map[string]any{}
-	if value.Mark != 0 {
-		settings["mark"] = value.Mark
-	}
-	if value.TCPFastOpen {
-		settings["tcpFastOpen"] = true
-	}
-	if value.TProxy != "" && value.TProxy != config.TProxyOff {
-		settings["tproxy"] = value.TProxy
-	}
-	if value.AcceptProxyProtocol {
-		settings["acceptProxyProtocol"] = true
-	}
-	if value.TCPMPTCP {
-		settings["tcpMptcp"] = true
-	}
-	for key, item := range map[string]uint32{
-		"tcpKeepAliveInterval": value.TCPKeepAliveInterval,
-		"tcpKeepAliveIdle":     value.TCPKeepAliveIdle,
-		"tcpMaxSeg":            value.TCPMaxSeg,
-		"tcpUserTimeout":       value.TCPUserTimeout,
-		"tcpWindowClamp":       value.TCPWindowClamp,
-	} {
-		if item != 0 {
-			settings[key] = item
-		}
-	}
-	if value.TCPCongestion != "" {
-		settings["tcpCongestion"] = value.TCPCongestion
-	}
-	if value.V6Only {
-		settings["v6only"] = true
-	}
-	if len(value.Custom) != 0 {
-		custom := make([]any, len(value.Custom))
-		for index, option := range value.Custom {
-			custom[index] = map[string]any{
-				"system": option.System, "network": option.Network,
-				"level": option.Level, "opt": option.Opt,
-				"type": option.Type, "value": option.Value,
-			}
-		}
-		settings["customSockopt"] = custom
-	}
-	return settings
-}
-
-func renderTCPSettings(value config.TCPSettings) map[string]any {
-	settings := map[string]any{
-		"acceptProxyProtocol": value.AcceptProxyProtocol,
-		"header":              map[string]any{"type": value.Header.Type},
-	}
-	if value.Header.Type != config.TCPHeaderHTTP {
-		return settings
-	}
-	settings["header"] = map[string]any{
-		"type": "http",
-		"request": map[string]any{
-			"version": value.Header.Request.Version, "method": value.Header.Request.Method,
-			"path": value.Header.Request.Path, "headers": value.Header.Request.Headers,
-		},
-		"response": map[string]any{
-			"version": value.Header.Response.Version, "status": value.Header.Response.Status,
-			"reason": value.Header.Response.Reason, "headers": value.Header.Response.Headers,
-		},
-	}
-	return settings
-}
-
-func renderSniffing(value config.Sniffing) map[string]any {
-	return map[string]any{
-		"enabled": value.Enabled, "destOverride": value.DestOverride,
-		"metadataOnly": value.MetadataOnly, "routeOnly": value.RouteOnly,
-		"ipsExcluded": value.IPsExcluded, "domainsExcluded": value.DomainsExcluded,
-	}
 }

@@ -2,67 +2,88 @@ package config
 
 import "testing"
 
-func TestOutboundsAcceptManagedAndCustomFreedomAndBlackhole(t *testing.T) {
+func TestEgressLineCredentialsAreWriteOnlyAndStable(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
+	editable := EditableConfiguration{
+		XrayVersion: "26.7.28",
+		Services:    testEditableServices()[:1],
+		EgressLines: []EditableEgressLine{
+			DefaultEgressLine(),
+			{
+				LineID: "socks-us", DisplayName: "SOCKS US", Enabled: true, VLESSRoute: 10, Type: EgressTypeSOCKS5,
+				SOCKS5: &EditableSOCKS5Egress{
+					Address: "proxy.example.com", Port: 1080, UseAuthentication: true,
+					Username: "alice", Password: "secret",
+				},
+			},
+			{
+				LineID: "ss-jp", DisplayName: "SS JP", Enabled: true, VLESSRoute: 20, Type: EgressTypeShadowsocks,
+				Shadowsocks: &EditableShadowsocksEgress{
+					Address: "ss.example.com", Port: 8388, Method: ShadowsocksMethod2022AES256, Password: "server-password",
+				},
+			},
+		},
+	}
+	value, err := NewFromEditable(editable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	value.Outbounds = append(value.Outbounds,
-		Outbound{
-			Tag: "IPv4", Protocol: OutboundProtocolFreedom,
-			Freedom: &FreedomOutboundSettings{
-				DomainStrategy: "UseIPv4", Redirect: "127.0.0.1:1080", UserLevel: 1, ProxyProtocol: 2,
-				Fragment:   &FreedomFragment{Packets: "tlshello", Length: "100-200", Interval: "10-20", MaxSplit: "300-400"},
-				Noises:     []FreedomNoise{{Type: "rand", Packet: "10-20", Delay: "10-16", ApplyTo: "ipv4"}},
-				FinalRules: []FreedomFinalRule{{Action: "block", Network: "tcp", Port: "443", IPs: []string{"geoip:private"}, BlockDelay: "5000-10000"}},
-			},
-		},
-		Outbound{Tag: "pt_blocked", Protocol: OutboundProtocolBlackhole, Blackhole: &BlackholeOutboundSettings{ResponseType: "none"}},
-	)
-	value.Routing = RoutingConfiguration{Rules: []RoutingRule{{
-		RuleID: "force-ipv4", DisplayName: "Force IPv4", Enabled: true,
-		Domains: []string{"geosite:google"}, OutboundTag: "IPv4",
-	}}}
-	if err := Validate(value); err != nil {
-		t.Fatalf("Validate() rejected supported outbounds: %v", err)
+	redacted := Editable(value)
+	if redacted.EgressLines[1].SOCKS5.Password != "" || !redacted.EgressLines[1].SOCKS5.PasswordConfigured ||
+		redacted.EgressLines[2].Shadowsocks.Password != "" || !redacted.EgressLines[2].Shadowsocks.PasswordConfigured {
+		t.Fatalf("editable egress lines = %+v", redacted.EgressLines)
 	}
-	value.Outbounds[0].Freedom.DomainStrategy = ""
-	value.Outbounds[0].Freedom.Fragment = &FreedomFragment{Packets: "1-3", Interval: "10-20"}
-	if err := Validate(value); err != nil {
-		t.Fatalf("Validate() rejected optional domain strategy or partial fragment: %v", err)
+	redacted.EgressLines[1].DisplayName = "Updated SOCKS"
+	merged, err := MergeEditable(value, redacted)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cloned := clone(value)
-	cloned.Outbounds[2].Freedom.FinalRules[0].IPs[0] = "geoip:cn"
-	if value.Outbounds[2].Freedom.FinalRules[0].IPs[0] != "geoip:private" {
-		t.Fatal("clone() aliased outbound settings")
+	if merged.EgressLines[1].SOCKS5.Password != "secret" ||
+		merged.EgressLines[2].Shadowsocks.Password != "server-password" {
+		t.Fatalf("merged egress secrets = %+v", merged.EgressLines)
 	}
 }
 
-func TestOutboundValidationRejectsInvalidDefinitionsAndReferences(t *testing.T) {
+func TestEgressAndAccessRuleValidation(t *testing.T) {
 	t.Parallel()
-	valid, err := NewConfiguration("26.7.28", 10085, testEditableServices()[:1])
+	value, err := NewConfiguration("26.7.28", testEditableServices())
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid.Routing = RoutingConfiguration{Rules: []RoutingRule{{
-		RuleID: "block-private", DisplayName: "Block private", Enabled: true,
-		DestinationIPs: []string{"geoip:private"}, OutboundTag: OutboundTagBlocked,
-	}}}
+	base := Editable(value)
+	base.EgressLines = append(base.EgressLines, EditableEgressLine{
+		LineID: "ipv6", DisplayName: "IPv6", Enabled: true, VLESSRoute: 6,
+		Type: EgressTypeDirect, Direct: &DirectEgress{SendThrough: "2001:db8::10"},
+	})
+	base.AccessRules = []AccessRule{{
+		RuleID: "registration", DisplayName: "Registration", Enabled: true,
+		Domains: []string{"domain:example.com"}, Protocols: []string{"tls"},
+		AuthorizationIDs: []string{"10000000-0000-4000-8000-000000000001"},
+		ServiceIDs:       []string{"reality-main"}, Action: AccessActionEgress, EgressLineID: "ipv6",
+	}}
+	valid, err := NewFromEditable(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid.EgressLines[0].LineID != DefaultEgressLineID || valid.EgressLines[1].Direct.SendThrough != "2001:db8::10" {
+		t.Fatalf("egress lines = %+v", valid.EgressLines)
+	}
 	tests := map[string]func(*Configuration){
-		"missing system outbound": func(value *Configuration) { value.Outbounds = value.Outbounds[:1] },
-		"duplicate tag":           func(value *Configuration) { value.Outbounds[1].Tag = OutboundTagDirect },
-		"reserved tag":            func(value *Configuration) { value.Outbounds[0].Tag = "relayward-api" },
-		"wrong direct protocol": func(value *Configuration) {
-			value.Outbounds[0] = Outbound{Tag: OutboundTagDirect, Protocol: OutboundProtocolBlackhole, Blackhole: &BlackholeOutboundSettings{}}
+		"default not first": func(candidate *Configuration) {
+			candidate.EgressLines[0], candidate.EgressLines[1] = candidate.EgressLines[1], candidate.EgressLines[0]
 		},
-		"missing settings":        func(value *Configuration) { value.Outbounds[0].Freedom = nil },
-		"invalid domain strategy": func(value *Configuration) { value.Outbounds[0].Freedom.DomainStrategy = "PreferIPv4" },
-		"invalid fragment": func(value *Configuration) {
-			value.Outbounds[0].Freedom.Fragment = &FreedomFragment{Packets: "bad", Length: "1-2", Interval: "1-2", MaxSplit: "1-2"}
+		"duplicate route": func(candidate *Configuration) { candidate.EgressLines[1].VLESSRoute = 0 },
+		"noncanonical source address": func(candidate *Configuration) {
+			candidate.EgressLines[1].Direct.SendThrough = "2001:0db8::10"
 		},
-		"invalid final rule":       func(value *Configuration) { value.Outbounds[0].Freedom.FinalRules[0].Action = "reject" },
-		"unknown routing outbound": func(value *Configuration) { value.Routing.Rules[0].OutboundTag = "missing" },
+		"empty rule": func(candidate *Configuration) {
+			candidate.AccessRules[0] = AccessRule{
+				RuleID: "empty", DisplayName: "Empty", Enabled: true, Action: AccessActionBlock,
+			}
+		},
+		"unknown service": func(candidate *Configuration) { candidate.AccessRules[0].ServiceIDs = []string{"missing"} },
+		"unknown line":    func(candidate *Configuration) { candidate.AccessRules[0].EgressLineID = "missing" },
+		"disabled line":   func(candidate *Configuration) { candidate.EgressLines[1].Enabled = false },
 	}
 	for name, mutate := range tests {
 		name, mutate := name, mutate

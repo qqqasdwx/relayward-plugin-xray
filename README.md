@@ -1,239 +1,153 @@
-# Xray Plugin for Relayward
+# Relayward Xray Plugin
+
+[中文](#中文) | [English](#english)
 
 [![CI](https://github.com/qqqasdwx/relayward-plugin-xray/actions/workflows/ci.yml/badge.svg)](https://github.com/qqqasdwx/relayward-plugin-xray/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/qqqasdwx/relayward-plugin-xray)](https://github.com/qqqasdwx/relayward-plugin-xray/releases)
 [![License](https://img.shields.io/github/license/qqqasdwx/relayward-plugin-xray)](LICENSE)
 
-`relayward-plugin-xray` is an independently maintained Xray runtime plugin for Relayward, tailored to the maintainer's real deployments. The center artifact participates in Relayward plugin lifecycle management, while the node artifact installs and supervises an official Xray release on each node.
+## 中文
 
-The plugin supports only the combinations documented below. It does not aim to expose every Xray protocol, transport, field, platform, or legacy configuration.
+这是维护者个人使用的 [Relayward](https://github.com/Relayward/relayward) Xray 运行时插件。中心插件负责管理页面、配置编排、服务发布和订阅渲染；节点插件负责安装、验证和监督官方 Xray 进程。
 
-## Current Scope
+本项目只实现已经明确使用的组合，不以覆盖全部 Xray 功能为目标。
 
-- Linux AMD64 center and node artifacts
-- responsive Simplified Chinese and English administration page
-- multiple independent VLESS + REALITY + RAW Vision and Shadowsocks inbounds per node
-- official published `XTLS/Xray-core` release resolution
-- bounded download with exact size and SHA-256 verification
-- private, immutable Xray version installations
-- Xray-native configuration checks with `xray run -test`
-- process replacement with restoration of the previous healthy configuration when candidate startup fails
-- dynamic authorization enforcement through Xray's local Handler API
-- cumulative per-authorization upload and download counters through Xray's local Stats API
-- recent accepted activity from Xray's online-user Stats API with a persistent telemetry cursor
-- per-authorization dynamic source-IP blocking through Xray's local Routing API
-- ordered static domain-suffix, destination-CIDR, and sniffed-protocol routing to direct or blocked outbounds
-- ordered system, UDP, TCP, and DNS-over-HTTPS resolvers with global IPv4/IPv6 query strategy and per-server domain selection
-- VLESS and Shadowsocks URI, Mihomo, and sing-box subscription contributions
-- Relayward generation, digest, and health reporting
+### 功能
 
-The current runtime supports up to 64 independently identified VLESS + REALITY + RAW Vision or Shadowsocks inbounds, 128 static routing rules, and 16 ordered DNS servers per node. Shadowsocks supports the `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, and `xchacha20-ietf-poly1305` methods over TCP, UDP, or both. Additional outbound types, protocols, transports, certificates, and full access-log collection are not implemented.
+- Linux AMD64 中心和节点制品
+- Debian/systemd 与 Alpine/OpenRC 节点
+- VLESS + RAW + REALITY + Vision 入站
+- Shadowsocks 2022 AES-128-GCM 与 AES-256-GCM 入站
+- 系统默认直连、指定本机 IPv4/IPv6、SOCKS5 和 Shadowsocks 2022 出口线路
+- 按来源 IP、授权、入站、网络、嗅探协议、目标 IP、域名和目标端口匹配的有序访问规则
+- 访问规则阻断或指定出口线路
+- VLESS 按订阅端点和出口线路展开 URI、Mihomo 与 sing-box 节点
+- Shadowsocks 按订阅端点展开 URI、Mihomo 与 sing-box 节点
+- 授权启停、累计流量、最近在线活动和动态来源 IP 封禁
+- 监听状态、本机地址枚举和真实出口探测
+- 官方 Xray 版本列表、受限下载、制品大小与 SHA-256 校验
+- `xray run -test`、进程切换和失败时保留上一健康配置
+- 简体中文与英文管理页面、明暗主题和响应式布局
 
-Recent activity is an online-presence signal rather than a full request log. While an authorization remains online, the plugin emits at most one accepted activity event per authorization, service, and source IP every 30 seconds. The stream ID, sequence cursor, unacknowledged events, and refresh index are stored atomically in a private state file so Agent retries and plugin restarts do not create sequence gaps. Dynamic blocks match authorization email, inbound service, and one source IP together, avoiding collateral blocking of another authorization behind the same NAT. Runtime routing replacement always rebuilds the complete managed rule set in API, internal REALITY tunnel, dynamic-block, then static-rule order, so a static direct rule cannot bypass a Relayward soft IP block or the tunnel SNI guard.
+### 安装要求
 
-## Installation
+- 已运行的 Relayward 中心
+- 已注册且在线的 Relayward Agent
+- 中心和节点均为 Linux AMD64
+- 节点可以通过 HTTPS 访问 GitHub Releases
+- 节点防火墙、云防火墙和 NAT 已按实际入站开放端口
 
-This plugin requires a running [Relayward](https://github.com/Relayward/relayward) center and an enrolled, online Relayward Agent on each target node. The center and nodes must be Linux AMD64. Nodes require outbound HTTPS access to GitHub Releases and must expose the proxy ports configured below to their intended clients.
+Relayward 和本插件不会修改宿主机防火墙、云防火墙、NAT 或中转机配置。
 
-In the Relayward administration interface, open **Plugins**, select **Install plugin**, and enter:
+### 安装插件
+
+在 Relayward 的插件页面添加以下 GitHub 仓库，并选择一个已发布版本：
 
 ```text
-GitHub repository: https://github.com/qqqasdwx/relayward-plugin-xray
-Version:           an existing release number without the leading v, for example 0.4.1
-GitHub token:      leave empty for this public repository
+https://github.com/qqqasdwx/relayward-plugin-xray
 ```
 
-Select **Check release**, inspect the manifest and artifacts, approve both requested permissions, and install the plugin:
+公开仓库不需要 GitHub Token。安装前 Relayward 会显示插件请求的权限：
 
-- `core.node_plugins.configure` reads and publishes Xray configuration for managed nodes.
-- `core.network_diagnostics.read` reads node listener status and checks configured subscription endpoint ports.
-- `core.services.write` publishes Xray services for Relayward authorization bindings.
+- `core.authorizations.read`：读取节点授权，用于配置按授权匹配的访问规则。
+- `core.network_diagnostics.read`：读取入站监听状态和订阅端点端口诊断。
+- `core.node_plugins.configure`：读取和发布节点的 Xray 插件配置。
+- `core.node_plugins.diagnose`：读取节点地址并按出口线路执行探测。
+- `core.services.write`：发布可绑定到授权的 Xray 入站服务。
 
-After installation, the plugin must report `active` and `healthy` before a node is configured.
+安装完成后，插件状态应为 active 和 healthy。
 
-## First Inbound
+### 首次配置
 
-1. Open **Nodes**, view an enrolled, online node, and select its **Xray** tab.
-2. Select a published official Xray version and add a VLESS + RAW + REALITY or Shadowsocks inbound. VLESS requires Xray `26.7.11` or newer; the default is `26.7.28`.
-3. Review the inbound listener and protocol-specific settings. Configure routing and DNS only when required.
-4. Save the node configuration. The Agent installs the node artifact, the plugin downloads and verifies the official Xray release, starts Xray, and publishes the inbound through Relayward's internal service catalog.
-5. Wait until **Plugins > Node instances** reports the desired generation as applied and the runtime as running.
-6. Open the configured TCP port in the node firewall, provider firewall, and any NAT port mapping. Relayward and this plugin do not modify host firewall rules.
-7. In Relayward, configure one or more usable subscription endpoints on the node, create a user and a node authorization, then use **Manage services** to bind the authorization to the published Xray service.
-8. Open the authorization's subscription link and select the required URI, Mihomo, or sing-box output.
+1. 在 Relayward 中打开一个在线节点的详情页，进入 **Xray**。
+2. 在 **运行时** 中选择官方 Xray 版本。
+3. 在 **入站** 中添加 VLESS REALITY 或 Shadowsocks 2022。新入站默认使用 `20000-29999` 的随机端口；VLESS 伪装目标默认是 `www.tesla.com:443`。
+4. 按需在 **出口线路** 中增加指定 IPv4/IPv6、SOCKS5 或 Shadowsocks 2022 线路，并使用出口探测确认实际出口。
+5. 按需在 **访问规则** 中创建有序规则。第一条匹配规则生效。
+6. 保存配置并等待节点实例应用新代数、Xray 状态恢复 healthy。
+7. 在 Relayward 节点详情中配置订阅端点和公网端口覆盖。
+8. 创建用户和节点授权，将授权绑定到 Xray 入站服务。
+9. 获取订阅并使用真实客户端连接，确认流量、在线活动和授权状态正常。
 
-Verify that the subscription contains one client entry for each usable node endpoint with the expected public address and port, then connect a real client through the inbound. Relayward should report the authorization as active, update traffic counters, and show recent accepted activity after traffic is generated.
+### 行为说明
 
-## Configuration
+VLESS 固定使用 RAW、REALITY、Vision 和 route-only 的 HTTP/TLS/QUIC 嗅探。每个入站独立生成 REALITY 私钥和 16 位十六进制 Short ID。无效 REALITY 握手进入自动生成的回环 tunnel；只有伪装目标对应的 SNI 可以转发，其余流量阻断。
 
-Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin owns the following structure:
+每个 VLESS 授权与出口线路组合使用独立订阅 UUID。默认线路使用 route `0`，其他线路使用唯一 route；Xray 从 UUID 中读取 route 后选择对应出口，未知 route 会被阻断。Shadowsocks 不复制出口线路，未命中访问规则时走默认线路。
 
-```json
-{
-  "xray_version": "26.7.28",
-  "api_port": 10085,
-  "credential_seed": "base64url-encoded-32-byte-secret",
-  "services": [
-    {
-      "type": "vless-reality",
-      "enabled": true,
-      "service_id": "reality-main",
-      "display_name": "Reality Main",
-      "listen": "0.0.0.0",
-      "port": 54321,
-      "tcp": {
-        "accept_proxy_protocol": false,
-        "header": {
-          "type": "none"
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "dest_override": ["http", "tls", "quic"],
-        "metadata_only": false,
-        "route_only": true,
-        "ips_excluded": [],
-        "domains_excluded": []
-      },
-      "vless_reality": {
-        "decryption": "none",
-        "encryption": "none",
-        "test_seed": [],
-        "fallbacks": [],
-        "show": false,
-        "xver": 2,
-        "target": "www.tesla.com:443",
-        "server_names": ["www.tesla.com"],
-        "private_key": "base64url-encoded-X25519-private-key",
-        "short_ids": ["0123456789abcdef"],
-        "min_client_version": "1.0.0",
-        "max_client_version": "",
-        "max_time_diff": 0,
-        "mldsa65_seed": "",
-        "mldsa65_verify": "",
-        "master_key_log": "",
-        "flow": "xtls-rprx-vision",
-        "fingerprint": "chrome",
-        "spider_x": "/"
-      }
-    },
-    {
-      "type": "shadowsocks",
-      "enabled": true,
-      "service_id": "shadowsocks-main",
-      "display_name": "Shadowsocks Main",
-      "listen": "0.0.0.0",
-      "port": 8388,
-      "sniffing": {
-        "enabled": false,
-        "dest_override": [],
-        "metadata_only": false,
-        "route_only": false,
-        "ips_excluded": [],
-        "domains_excluded": []
-      },
-      "shadowsocks": {
-        "method": "2022-blake3-aes-256-gcm",
-        "network": "tcp,udp",
-        "server_key": "padded-base64-encoded-32-byte-secret",
-        "iv_check": true
-      }
-    }
-  ],
-  "routing": {
-    "rules": [
-      {
-        "rule_id": "block-private",
-        "display_name": "Block private destinations",
-        "enabled": true,
-        "source_ips": [],
-        "source_port": "",
-        "vless_route": "",
-        "network": "",
-        "protocols": [],
-        "attributes": {},
-        "destination_ips": ["geoip:private"],
-        "domains": [],
-        "users": [],
-        "destination_port": "",
-        "inbound_tags": [],
-        "outbound_tag": "blocked"
-      }
-    ]
-  },
-  "dns": {
-    "enabled": true,
-    "query_strategy": "use-ipv4",
-    "servers": [
-      {
-        "server_id": "regional",
-        "display_name": "Regional DNS",
-        "enabled": true,
-        "transport": "doh",
-        "address": "https://dns.example.com/dns-query",
-        "port": 0,
-        "domains": ["example.com"]
-      },
-      {
-        "server_id": "system",
-        "display_name": "System DNS",
-        "enabled": true,
-        "transport": "system",
-        "address": "",
-        "port": 0,
-        "domains": []
-      }
-    ]
-  }
-}
-```
+访问规则在同一字段内使用 OR，在不同字段之间使用 AND，并按页面顺序匹配。运行时优先保证本地 API、REALITY SNI 防护、出口探测和 Relayward 动态来源 IP 封禁，然后才执行管理员访问规则和订阅线路路由。
 
-The administration UI consistently calls these entries inbounds. The persisted `services[]` array and `service_id` fields are Relayward's internal cross-plugin contract, while protocol-specific fields are stored in either `vless_reality` or `shadowsocks`. Public addresses and NAT port mappings are Relayward node endpoints rather than Xray plugin configuration. During subscription rendering, Relayward supplies every usable endpoint to the plugin; the plugin emits one client entry per bound service and endpoint combination. An endpoint without a port override uses the inbound listening port. The inbound protocol cannot be changed after the entry is created.
+节点插件从官方 `XTLS/Xray-core` Release 下载 `Xray-linux-64.zip`。插件只接受具有有效 GitHub SHA-256 digest、大小在限制内且下载地址与官方 tag 完全一致的制品。Xray 不包含在本插件的 Release 中。
 
-For VLESS, the plugin fixes the listener to all interfaces, uses RAW and REALITY, enables route-only HTTP/TLS/QUIC sniffing, and derives the single allowed `serverName` from the camouflage target. It generates one X25519 key pair and one 16-hex-character Short ID per inbound. Invalid REALITY handshakes are sent to a deterministic high-port tunnel bound to `127.0.0.1`; REALITY supplies the original client address to that tunnel with PROXY Protocol v2. The tunnel accepts PROXY Protocol only on this loopback listener, sends only the exact configured TLS SNI to the camouflage target, and blocks every other SNI, missing SNI, and unrecognized connection. Fallback traffic is limited in both directions after the first 10 MiB.
-
-Each internal service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Entries are stored in service-ID order. The plugin generates a node credential seed, independent REALITY secrets for each new VLESS inbound, and a method-sized server key for each new Shadowsocks 2022 inbound. Editing an inbound preserves its secrets by ID; deleting it removes them.
-
-Every Relayward authorization receives an independent, deterministic Shadowsocks password for each Shadowsocks inbound. Shadowsocks 2022 subscriptions combine the inbound server key and the authorization-specific user key as required by the protocol; traditional AEAD subscriptions contain only the authorization-specific password. The private bootstrap account used to keep a Shadowsocks 2022 inbound in Xray's multi-user mode is derived internally and is never exposed through subscriptions.
-
-Static routing rules retain their configured order and have stable rule IDs. Values within one match category are alternatives, while every populated category on a rule must match. A domain value matches that domain and its subdomains; raw Xray expressions and regular expressions are not accepted. IP matches must use canonical IPv4 or IPv6 CIDR notation. Protocol matches are limited to `http`, `tls`, `quic`, and `bittorrent`; Xray reports HTTP/1 traffic as `http1`, which is covered by its `http` protocol-prefix matcher. Rules may send matching traffic only to the built-in `direct` or `blocked` outbound. Domain or protocol rules enable route-only HTTP, TLS, and QUIC sniffing on enabled inbounds, preserving the original connection target while making the sniffed destination available to routing.
-
-DNS is disabled unless explicitly enabled. Enabling it makes Xray use the configured resolver list for routing fallback and direct outbound domain resolution; disabling it preserves the previous `AsIs` direct-outbound behavior. The global query strategy is `use-ip`, `use-ipv4`, or `use-ipv6`. Servers retain their configured order and may use the system resolver, classic UDP, local TCP, or local DNS-over-HTTPS. UDP and TCP endpoints require a canonical IP address and explicit port. DNS-over-HTTPS endpoints require a credential-free HTTPS URL and are rendered in Xray local mode to avoid recursive bootstrap through the configured resolver chain.
-
-An empty server domain list makes that server a general fallback resolver. A populated list contains lowercase domain suffixes and restricts the server to those domains and their subdomains. When at least one domain-specific server matches, general fallback servers are not queried for that lookup. Disabled servers remain editable in Relayward but are omitted from the generated Xray configuration.
-
-Unknown fields, draft or malformed Xray versions, duplicate inbound, rule, or DNS server IDs, conflicting listeners, invalid REALITY targets, noncanonical addresses or CIDRs, insecure DNS-over-HTTPS URLs, unsupported routing expressions, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
-
-The target is a starting value, not a universal deployment choice. It must be reachable from the node, support TLS 1.3, and complete a real REALITY handshake with the selected Xray release; a successful TCP or ordinary TLS probe alone is insufficient.
-
-Each VLESS authorization receives a deterministic UUID derived as `HMAC-SHA256(credential_seed, authorization_id + NUL + service_id)`. Traditional Shadowsocks AEAD uses the same stable value as its password. Shadowsocks 2022 derives a method-sized base64 user key from the same node secret and identifiers with a protocol-specific domain separator. These credentials are stable for one node configuration, differ between authorizations, and cannot be derived from public Relayward identifiers without the node secret. Subscription rendering repeats the derivation without creating or mutating state.
-
-## Release Trust
-
-The node plugin queries the fixed official `XTLS/Xray-core` GitHub Release endpoint and selects only `Xray-linux-64.zip`. It accepts published releases, including releases marked as pre-release by the upstream project, but rejects drafts. It verifies the exact tag and asset URL, bounds the asset size, and checks the SHA-256 digest supplied by GitHub before extraction. Xray is downloaded directly by the node plugin and is not bundled in Relayward plugin releases. Runtime control uses a persistent loopback gRPC connection and does not import or build Xray-core as a Go dependency. Routing API encoding supports both the legacy schema used through Xray `v26.7.10` and the geodata rule schema introduced in `v26.7.11`.
-
-## Development
+### 开发
 
 ```sh
-go test ./...
-go vet ./...
-go build ./...
+GOWORK=/root/relayward-workspace/tmp/go.work go test ./...
+GOWORK=/root/relayward-workspace/tmp/go.work go vet ./...
+GOWORK=/root/relayward-workspace/tmp/go.work go build ./...
 
-cd ui
-npm ci
-npm run typecheck
-npm run lint
-npm test
-npm run build
-cd ..
+npm --prefix ui ci
+npm --prefix ui run typecheck
+npm --prefix ui run lint
+npm --prefix ui test
+npm --prefix ui run build
 
 ./scripts/build-release.sh 0.0.0-dev /tmp/relayward-plugin-xray-release
 ```
 
-Run `npm run dev` from `ui/` for local UI development. The page is a sandboxed iframe application and communicates with Relayward through the vendored UI SDK; a host simulator is required for standalone browser interaction.
+0.x 版本的插件配置格式可能发生破坏性变化。生产发布前应使用正式 Release 制品在 Debian 和 Alpine 节点完成验收。
 
-Release builds contain `relayward-plugin.json`, separate center and node Linux AMD64 artifacts, the sandboxed UI archive, and `SHA256SUMS`.
+## English
+
+This repository provides the maintainer's personal Xray runtime plugin for [Relayward](https://github.com/Relayward/relayward). The center plugin owns the administration UI, configuration orchestration, service publication, and subscription rendering. The node plugin installs, validates, and supervises an official Xray process.
+
+The project intentionally supports a focused deployment profile instead of exposing every Xray option.
+
+### Features
+
+- Linux AMD64 artifacts for Debian/systemd and Alpine/OpenRC nodes
+- VLESS + RAW + REALITY + Vision inbounds
+- Shadowsocks 2022 AES-128-GCM and AES-256-GCM inbounds
+- system-default direct, selected local IPv4/IPv6, SOCKS5, and Shadowsocks 2022 egress lines
+- ordered access rules matching source IPs, authorizations, inbounds, networks, sniffed protocols, destination IPs, domains, and ports
+- block or selected-egress actions
+- VLESS subscription expansion across Relayward endpoints and enabled egress lines
+- Shadowsocks subscription expansion across Relayward endpoints
+- URI, Mihomo, and sing-box subscription contributions
+- authorization control, cumulative traffic, recent activity, and dynamic source-IP blocking
+- listener diagnostics, node address discovery, and real egress probing
+- official Xray release discovery, bounded downloads, exact size and SHA-256 verification
+- native Xray configuration checks, process replacement, and preservation of the last healthy runtime on failure
+- responsive Simplified Chinese and English administration UI with light and dark themes
+
+### Requirements and installation
+
+The plugin requires a running Relayward center and an enrolled, online Relayward Agent. Both center and nodes must be Linux AMD64, and nodes need outbound HTTPS access to GitHub Releases.
+
+Add the following public repository in Relayward's plugin page and select a published release. No GitHub token is required:
+
+```text
+https://github.com/qqqasdwx/relayward-plugin-xray
+```
+
+Review and approve these permissions:
+
+- `core.authorizations.read`
+- `core.network_diagnostics.read`
+- `core.node_plugins.configure`
+- `core.node_plugins.diagnose`
+- `core.services.write`
+
+Open an online node's Xray page, select an official Xray version, configure inbounds, optional egress lines and access rules, then save. Configure public subscription endpoints in Relayward's node settings, create a user and node authorization, and bind the authorization to the published Xray service.
+
+Relayward and this plugin do not change host or provider firewalls, NAT mappings, or relay configuration. Those paths must expose the configured public ports independently.
+
+### Development
+
+Use the commands in the Chinese development section above. Release bundles contain the manifest, separate Linux AMD64 center and node binaries, the sandboxed UI archive, and `SHA256SUMS`. Xray itself is downloaded from official `XTLS/Xray-core` releases and is not bundled.
+
+Configuration compatibility may change during the 0.x series. Validate production candidates with release artifacts on both Debian and Alpine nodes.
 
 ## License
 
-This plugin is licensed under GPL-3.0. Xray-core is an independent project distributed under MPL-2.0 and is downloaded from its official releases.
+This plugin is licensed under GPL-3.0. Xray-core is an independent project distributed under MPL-2.0.

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,9 @@ const (
 	configurationTestTimeout = 10 * time.Second
 	defaultStartupGrace      = 750 * time.Millisecond
 	processStopTimeout       = 5 * time.Second
+	processRestartTimeout    = 15 * time.Second
+	defaultRestartDelay      = time.Second
+	maximumRestartDelay      = 30 * time.Second
 )
 
 var ErrConfigurationRejected = errors.New("Xray rejected the configuration")
@@ -50,11 +54,18 @@ type Manager struct {
 	startupGrace  time.Duration
 	connectAPI    func(context.Context, config.Configuration) (runtimeAPI, error)
 	inspect       func(config.Configuration) []ListenerStatus
+	probe         func(context.Context, string) (EgressProbe, error)
+	interfaces    func() ([]net.Interface, error)
+	addresses     func(net.Interface) ([]net.Addr, error)
+	lifecycle     context.Context
+	cancel        context.CancelFunc
+	restartDelay  time.Duration
 
 	operation             sync.Mutex
 	state                 sync.Mutex
 	process               *managedProcess
 	running               *runtimeSpec
+	restartMessage        string
 	generation            uint64
 	digest                string
 	epoch                 string
@@ -95,14 +106,23 @@ func NewManager(dataDirectory string, installer Installer) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	lifecycle, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		dataDirectory: dataDirectory,
 		installer:     installer,
 		startupGrace:  defaultStartupGrace,
+		lifecycle:     lifecycle,
+		cancel:        cancel,
+		restartDelay:  defaultRestartDelay,
 		connectAPI: func(ctx context.Context, configuration config.Configuration) (runtimeAPI, error) {
 			return connectXrayAPI(ctx, configuration)
 		},
-		inspect:   inspectListeners,
+		inspect:    inspectListeners,
+		probe:      probeCloudflareTrace,
+		interfaces: net.Interfaces,
+		addresses: func(networkInterface net.Interface) ([]net.Addr, error) {
+			return networkInterface.Addrs()
+		},
 		services:  make(map[string]*serviceState),
 		telemetry: telemetry,
 	}, nil
@@ -187,7 +207,11 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 		manager.state.Lock()
 		manager.process = restored
 		manager.running = previousSpec
+		manager.restartMessage = ""
 		manager.state.Unlock()
+		if restored != nil {
+			manager.watchProcess(restored, previousSpec)
+		}
 		if previousSpec != nil && restored == nil {
 			return errors.New("candidate Xray failed to start and the previous process could not be restored")
 		}
@@ -201,7 +225,9 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 	manager.running = candidate
 	manager.generation = generation
 	manager.digest = digest
+	manager.restartMessage = ""
 	manager.state.Unlock()
+	manager.watchProcess(candidateProcess, candidate)
 	manager.epoch = candidateEpoch
 	manager.reconcileConfiguredServices(configuration)
 	return nil
@@ -239,7 +265,10 @@ func (manager *Manager) GetStatus() Status {
 		return status
 	}
 	if manager.process == nil || manager.process.exited() {
-		status.Message = "Xray process is not running"
+		status.Message = manager.restartMessage
+		if status.Message == "" {
+			status.Message = "Xray process is not running"
+		}
 		manager.state.Unlock()
 		return status
 	}
@@ -263,17 +292,84 @@ func (manager *Manager) GetStatus() Status {
 }
 
 func (manager *Manager) Close(ctx context.Context) error {
+	manager.cancel()
 	manager.operation.Lock()
 	defer manager.operation.Unlock()
 	manager.state.Lock()
 	process := manager.process
 	manager.process = nil
 	manager.running = nil
+	manager.restartMessage = ""
 	manager.state.Unlock()
 	if process == nil {
 		return nil
 	}
 	return process.stop(ctx)
+}
+
+func (manager *Manager) watchProcess(process *managedProcess, spec *runtimeSpec) {
+	go func() {
+		select {
+		case <-process.done:
+		case <-manager.lifecycle.Done():
+			return
+		}
+
+		manager.operation.Lock()
+		manager.state.Lock()
+		if manager.process != process || manager.running != spec {
+			manager.state.Unlock()
+			manager.operation.Unlock()
+			return
+		}
+		manager.process = nil
+		manager.restartMessage = "Xray process exited unexpectedly"
+		manager.state.Unlock()
+		_ = process.stop(context.Background())
+		manager.operation.Unlock()
+
+		delay := manager.restartDelay
+		if delay <= 0 {
+			delay = defaultRestartDelay
+		}
+		for {
+			timer := time.NewTimer(delay)
+			select {
+			case <-manager.lifecycle.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+
+			manager.operation.Lock()
+			manager.state.Lock()
+			if manager.process != nil || manager.running != spec {
+				manager.state.Unlock()
+				manager.operation.Unlock()
+				return
+			}
+			manager.state.Unlock()
+
+			ctx, cancel := context.WithTimeout(manager.lifecycle, processRestartTimeout)
+			replacement, err := manager.startConfigured(ctx, spec)
+			cancel()
+			if err == nil {
+				manager.state.Lock()
+				manager.process = replacement
+				manager.restartMessage = ""
+				manager.state.Unlock()
+				manager.operation.Unlock()
+				manager.watchProcess(replacement, spec)
+				return
+			}
+			manager.state.Lock()
+			manager.restartMessage = fmt.Sprintf("restart Xray process: %v", err)
+			manager.state.Unlock()
+			manager.operation.Unlock()
+
+			delay = min(delay*2, maximumRestartDelay)
+		}
+	}()
 }
 
 func (manager *Manager) restore(spec *runtimeSpec) *managedProcess {

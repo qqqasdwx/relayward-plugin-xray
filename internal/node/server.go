@@ -1,8 +1,11 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"time"
 
 	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
@@ -23,6 +26,8 @@ type Runtime interface {
 	ApplyDynamicBlocks(context.Context, uint64, uint64, []xrayruntime.DynamicBlock) error
 	CollectTraffic(context.Context) ([]xrayruntime.TrafficCounter, error)
 	CollectActivity(context.Context, uint64, uint32) (xrayruntime.ActivityPage, error)
+	NetworkAddresses() ([]xrayruntime.NetworkAddress, error)
+	ProbeEgress(context.Context, string) (xrayruntime.EgressProbe, error)
 	TelemetryStreamID() string
 	GetStatus() xrayruntime.Status
 }
@@ -45,12 +50,76 @@ func (server *Server) GetInfo(context.Context, *nodepluginv1.GetInfoRequest) (*n
 		Capabilities: []string{
 			nodepluginv1.CapabilityRecentActivity,
 			nodepluginv1.CapabilityDynamicBlocking,
+			nodepluginv1.CapabilityDiagnostics,
 			nodepluginv1.CapabilityListenerStatus,
 			nodepluginv1.CapabilityServiceControl,
 			nodepluginv1.CapabilityTrafficCounters,
 		},
 		TelemetryStreamId: server.runtime.TelemetryStreamID(),
 	}, nil
+}
+
+func (server *Server) Diagnose(ctx context.Context, request *nodepluginv1.DiagnoseRequest) (*nodepluginv1.DiagnoseResponse, error) {
+	if err := nodepluginv1.ValidateDiagnoseRequest(request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Xray diagnostic request")
+	}
+	var value any
+	switch request.Name {
+	case "network.addresses":
+		var input struct{}
+		if err := decodeDiagnostic(request.Json, &input); err != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid network address request")
+		}
+		addresses, err := server.runtime.NetworkAddresses()
+		if err != nil {
+			return nil, status.Error(codes.Unavailable, "inspect node network addresses")
+		}
+		value = map[string]any{"addresses": addresses}
+	case "egress.probe":
+		var input struct {
+			LineID string `json:"line_id"`
+		}
+		if err := decodeDiagnostic(request.Json, &input); err != nil || input.LineID == "" {
+			return nil, status.Error(codes.InvalidArgument, "invalid egress probe request")
+		}
+		probe, err := server.runtime.ProbeEgress(ctx, input.LineID)
+		if err != nil {
+			switch {
+			case errors.Is(err, xrayruntime.ErrRuntimeUnavailable), errors.Is(err, xrayruntime.ErrEgressLineUnavailable):
+				return nil, status.Error(codes.FailedPrecondition, err.Error())
+			default:
+				return nil, status.Error(codes.Unavailable, "Xray egress probe failed")
+			}
+		}
+		value = probe
+	default:
+		return nil, status.Error(codes.Unimplemented, "unsupported Xray diagnostic")
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "encode Xray diagnostic response")
+	}
+	response := &nodepluginv1.DiagnoseResponse{Json: raw}
+	if err := nodepluginv1.ValidateDiagnoseResponse(request, response); err != nil {
+		return nil, status.Error(codes.Internal, "Xray diagnostic response is invalid")
+	}
+	return response, nil
+}
+
+func decodeDiagnostic(raw []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func (server *Server) CollectTelemetry(ctx context.Context, request *nodepluginv1.CollectTelemetryRequest) (*nodepluginv1.CollectTelemetryResponse, error) {

@@ -28,29 +28,7 @@ func main() {
 	if err := contract.ValidateSemanticVersion(*version); err != nil {
 		fatal("invalid version: %v", err)
 	}
-	agentAPI := uint32(contract.AgentAPIMajor)
-	uiAPI := uint32(contract.UIAPIMajor)
-	value := manifest.Manifest{
-		APIVersion: contract.ManifestAPIVersion,
-		ID:         pluginmeta.ID,
-		Name:       "Xray",
-		Version:    *version,
-		Kind:       manifest.KindRuntime,
-		Requires: manifest.Requirements{
-			ControlAPI: contract.ControlAPIMajor,
-			AgentAPI:   &agentAPI,
-			UIAPI:      &uiAPI,
-		},
-		Permissions: []manifest.Permission{
-			{Name: centerpluginv1.PermissionPortDiagnose, Reason: "Read node listener status and test configured subscription endpoint ports."},
-			{Name: centerpluginv1.PermissionNodeConfigure, Reason: "Read and publish the Xray plugin configuration for managed nodes."},
-			{Name: centerpluginv1.PermissionServicesWrite, Reason: "Publish Xray services that can be bound to node authorizations."},
-		},
-		UI: &manifest.UIContribution{NodeDetail: &manifest.NodeDetailContribution{
-			Label: manifest.LocalizedLabel{ZhCN: "Xray", En: "Xray"},
-			Icon:  manifest.NavigationIconServerCog, Order: 400,
-		}},
-	}
+	value := releaseManifest(*version)
 	for _, artifact := range []struct {
 		role manifest.ArtifactRole
 		name string
@@ -74,6 +52,34 @@ func main() {
 	}
 	if err := os.WriteFile(filepath.Join(*directory, "relayward-plugin.json"), append(raw, '\n'), 0o644); err != nil {
 		fatal("write manifest: %v", err)
+	}
+}
+
+func releaseManifest(version string) manifest.Manifest {
+	agentAPI := uint32(contract.AgentAPIMajor)
+	uiAPI := uint32(contract.UIAPIMajor)
+	return manifest.Manifest{
+		APIVersion: contract.ManifestAPIVersion,
+		ID:         pluginmeta.ID,
+		Name:       "Xray",
+		Version:    version,
+		Kind:       manifest.KindRuntime,
+		Requires: manifest.Requirements{
+			ControlAPI: contract.ControlAPIMajor,
+			AgentAPI:   &agentAPI,
+			UIAPI:      &uiAPI,
+		},
+		Permissions: []manifest.Permission{
+			{Name: centerpluginv1.PermissionAuthorizationsRead, Reason: "List node authorizations when configuring user-specific access rules."},
+			{Name: centerpluginv1.PermissionPortDiagnose, Reason: "Read node listener status and test configured subscription endpoint ports."},
+			{Name: centerpluginv1.PermissionNodeConfigure, Reason: "Read and publish the Xray plugin configuration for managed nodes."},
+			{Name: centerpluginv1.PermissionNodeDiagnose, Reason: "Inspect node addresses and test configured Xray egress lines on demand."},
+			{Name: centerpluginv1.PermissionServicesWrite, Reason: "Publish Xray services that can be bound to node authorizations."},
+		},
+		UI: &manifest.UIContribution{NodeDetail: &manifest.NodeDetailContribution{
+			Label: manifest.LocalizedLabel{ZhCN: "Xray", En: "Xray"},
+			Icon:  manifest.NavigationIconServerCog, Order: 400,
+		}},
 	}
 }
 

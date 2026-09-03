@@ -348,8 +348,8 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 			return runtimeCredential{}, err
 		}
 		return runtimeCredential{
-			serviceType: service.Type, id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.VLESSReality.Flow,
-			testSeed: append([]uint32(nil), service.VLESSReality.TestSeed...),
+			serviceType: service.Type, id: id, email: config.UserEmail(authorizationID, serviceID),
+			flow: config.VLESSVisionFlow,
 		}, nil
 	case config.ServiceTypeShadowsocks:
 		password, err := config.DeriveShadowsocksPassword(
@@ -360,7 +360,7 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 		}
 		return runtimeCredential{
 			serviceType: service.Type, email: config.UserEmail(authorizationID, serviceID),
-			password: password, method: service.Shadowsocks.Method, ivCheck: service.Shadowsocks.IVCheck,
+			password: password, method: service.Shadowsocks.Method,
 		}, nil
 	default:
 		return runtimeCredential{}, ErrUnsupportedService
@@ -372,10 +372,8 @@ type runtimeCredential struct {
 	id          string
 	email       string
 	flow        string
-	testSeed    []uint32
 	password    string
 	method      string
-	ivCheck     bool
 }
 
 func (manager *Manager) refreshTraffic(ctx context.Context, process *managedProcess) error {
@@ -475,31 +473,21 @@ func marshalRuntimeAccount(credential runtimeCredential) (string, []byte, error)
 	switch credential.serviceType {
 	case config.ServiceTypeVLESSReality:
 		raw, err := marshalLegacy(&vlessAccount{
-			ID: credential.id, Flow: credential.flow, Encryption: "none", TestSeed: credential.testSeed,
+			ID: credential.id, Flow: credential.flow, Encryption: "none",
 		})
 		if err != nil {
 			return "", nil, errors.New("encode Xray VLESS account")
 		}
 		return "xray.proxy.vless.Account", raw, nil
 	case config.ServiceTypeShadowsocks:
-		if config.IsShadowsocks2022(credential.method) {
-			raw, err := marshalLegacy(&shadowsocks2022Account{Key: credential.password})
-			if err != nil {
-				return "", nil, errors.New("encode Xray Shadowsocks 2022 account")
-			}
-			return "xray.proxy.shadowsocks_2022.Account", raw, nil
-		}
-		cipherType, exists := config.ShadowsocksCipherType(credential.method)
-		if !exists {
+		if !config.IsShadowsocks2022(credential.method) {
 			return "", nil, errors.New("unsupported Xray Shadowsocks method")
 		}
-		raw, err := marshalLegacy(&shadowsocksAccount{
-			Password: credential.password, CipherType: cipherType, IVCheck: credential.ivCheck,
-		})
+		raw, err := marshalLegacy(&shadowsocks2022Account{Key: credential.password})
 		if err != nil {
-			return "", nil, errors.New("encode Xray Shadowsocks account")
+			return "", nil, errors.New("encode Xray Shadowsocks 2022 account")
 		}
-		return "xray.proxy.shadowsocks.Account", raw, nil
+		return "xray.proxy.shadowsocks_2022.Account", raw, nil
 	default:
 		return "", nil, ErrUnsupportedService
 	}

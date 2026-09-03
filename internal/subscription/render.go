@@ -51,14 +51,20 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 		contribution := &centerpluginv1.SubscriptionServiceContribution{
 			ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
 		}
+		lines := []config.EgressLine{{LineID: config.DefaultEgressLineID, DisplayName: "Default", Enabled: true}}
+		if service.Type == config.ServiceTypeVLESSReality {
+			lines = enabledEgressLines(configuration)
+		}
 		for _, endpoint := range request.Endpoints {
-			fragment, err := renderService(configuration, service, binding, request.AuthorizationId, endpoint)
-			if err != nil {
-				return nil, err
+			for _, line := range lines {
+				fragment, err := renderService(configuration, service, binding, request.AuthorizationId, endpoint, line)
+				if err != nil {
+					return nil, err
+				}
+				contribution.Uris = append(contribution.Uris, fragment.Uris...)
+				contribution.MihomoProxiesJson = append(contribution.MihomoProxiesJson, fragment.MihomoProxiesJson...)
+				contribution.SingBoxOutboundsJson = append(contribution.SingBoxOutboundsJson, fragment.SingBoxOutboundsJson...)
 			}
-			contribution.Uris = append(contribution.Uris, fragment.Uris...)
-			contribution.MihomoProxiesJson = append(contribution.MihomoProxiesJson, fragment.MihomoProxiesJson...)
-			contribution.SingBoxOutboundsJson = append(contribution.SingBoxOutboundsJson, fragment.SingBoxOutboundsJson...)
 		}
 		sort.Strings(contribution.Uris)
 		response.Services[index] = contribution
@@ -71,10 +77,11 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 
 func renderService(configuration config.Configuration, service config.Service,
 	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string, endpoint *centerpluginv1.SubscriptionEndpoint,
+	line config.EgressLine,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
-		return renderVLESSReality(configuration, service, binding, authorizationID, endpoint)
+		return renderVLESSReality(configuration, service, binding, authorizationID, endpoint, line)
 	case config.ServiceTypeShadowsocks:
 		return renderShadowsocks(configuration, service, binding, authorizationID, endpoint)
 	default:
@@ -102,7 +109,7 @@ func renderShadowsocks(configuration config.Configuration, service config.Servic
 	}
 	mihomo, err := json.Marshal(map[string]any{
 		"name": displayName, "type": "ss", "server": host, "port": port,
-		"cipher": settings.Method, "password": password, "udp": settings.Network != config.ShadowsocksNetworkTCP,
+		"cipher": settings.Method, "password": password, "udp": true,
 	})
 	if err != nil {
 		return nil, err
@@ -133,61 +140,49 @@ func shadowsocksURI(host string, port uint16, method, serverKey, userPassword, d
 
 func renderVLESSReality(configuration config.Configuration, service config.Service,
 	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string, endpoint *centerpluginv1.SubscriptionEndpoint,
+	line config.EgressLine,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	reality := service.VLESSReality
 	publicKey, err := config.RealityPublicKey(reality.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	serverName := reality.ServerNames[0]
-	shortID := reality.ShortIDs[0]
+	serverName := realityServerName(reality.Target)
+	shortID := reality.ShortID
 	credential, err := config.DeriveCredential(configuration.CredentialSeed, authorizationID, binding.ServiceId)
+	if err != nil {
+		return nil, err
+	}
+	credential, err = config.CredentialForVLESSRoute(credential, line.VLESSRoute)
 	if err != nil {
 		return nil, err
 	}
 	host := endpoint.Address
 	port := effectivePublicPort(endpoint, service)
-	displayName := endpointDisplayName(binding.DisplayName, endpoint.DisplayName)
-	uri := vlessURI(host, port, credential, displayName, reality.Flow,
-		reality.Fingerprint, serverName, publicKey, shortID, reality.SpiderX, reality.Encryption,
-		reality.MLDSA65Verify, service.TCP)
+	displayName := egressDisplayName(endpointDisplayName(binding.DisplayName, endpoint.DisplayName), line)
+	uri := vlessURI(host, port, credential, displayName, serverName, publicKey, shortID)
 	contribution := &centerpluginv1.SubscriptionServiceContribution{
 		ServiceId: binding.ServiceId, DisplayName: displayName, Uris: []string{uri},
 	}
-	if service.TCP.Header.Type == config.TCPHeaderHTTP || reality.MLDSA65Verify != "" {
-		return contribution, nil
-	}
 	mihomoValue := map[string]any{
 		"name": displayName, "type": "vless", "server": host, "port": port,
-		"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": reality.Flow,
-		"servername": serverName, "client-fingerprint": reality.Fingerprint,
+		"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": config.VLESSVisionFlow,
+		"servername": serverName, "client-fingerprint": "chrome",
 		"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
-	}
-	if reality.Encryption != "none" {
-		mihomoValue["encryption"] = reality.Encryption
-	}
-	if reality.Flow == "" {
-		delete(mihomoValue, "flow")
 	}
 	mihomo, err := json.Marshal(mihomoValue)
 	if err != nil {
 		return nil, err
 	}
 	contribution.MihomoProxiesJson = [][]byte{mihomo}
-	if reality.Encryption != "none" {
-		return contribution, nil
-	}
 	singBoxValue := map[string]any{
 		"type": "vless", "tag": displayName, "server": host, "server_port": port,
-		"uuid": credential, "flow": reality.Flow,
+		"uuid": credential, "flow": config.VLESSVisionFlow,
 		"tls": map[string]any{
 			"enabled": true, "server_name": serverName,
-			"utls":    map[string]any{"enabled": true, "fingerprint": reality.Fingerprint},
+			"utls":    map[string]any{"enabled": true, "fingerprint": "chrome"},
 			"reality": map[string]any{"enabled": true, "public_key": publicKey, "short_id": shortID},
 		},
-	}
-	if reality.Flow == "" {
-		delete(singBoxValue, "flow")
 	}
 	singBox, err := json.Marshal(singBoxValue)
 	if err != nil {
@@ -212,6 +207,28 @@ func endpointDisplayName(serviceName, endpointName string) string {
 	return truncateRunes(serviceName, 49) + " / " + truncateRunes(endpointName, 48)
 }
 
+func egressDisplayName(base string, line config.EgressLine) string {
+	if line.LineID == config.DefaultEgressLineID {
+		return base
+	}
+	return truncateRunes(base, 65) + " / " + truncateRunes(line.DisplayName, 32)
+}
+
+func enabledEgressLines(configuration config.Configuration) []config.EgressLine {
+	result := make([]config.EgressLine, 0, len(configuration.EgressLines))
+	for _, line := range configuration.EgressLines {
+		if line.Enabled {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+func realityServerName(target string) string {
+	host, _, _ := net.SplitHostPort(target)
+	return host
+}
+
 func truncateRunes(value string, maximum int) string {
 	runes := []rune(value)
 	if len(runes) <= maximum {
@@ -220,30 +237,14 @@ func truncateRunes(value string, maximum int) string {
 	return string(runes[:maximum])
 }
 
-func vlessURI(host string, port uint16, credential, displayName, flow, fingerprint, serverName, publicKey, shortID, spiderX, encryption, mldsa65Verify string, tcp config.TCPSettings) string {
+func vlessURI(host string, port uint16, credential, displayName, serverName, publicKey, shortID string) string {
 	value := &url.URL{
 		Scheme: "vless", User: url.User(credential), Host: net.JoinHostPort(host, strconv.Itoa(int(port))),
 		Fragment: displayName,
 	}
 	query := url.Values{
-		"encryption": {encryption}, "fp": {fingerprint}, "pbk": {publicKey},
+		"encryption": {"none"}, "flow": {config.VLESSVisionFlow}, "fp": {"chrome"}, "pbk": {publicKey},
 		"security": {"reality"}, "sid": {shortID}, "sni": {serverName}, "type": {"tcp"},
-	}
-	if flow != "" {
-		query.Set("flow", flow)
-	}
-	if spiderX != "" && spiderX != "/" {
-		query.Set("spx", spiderX)
-	}
-	if mldsa65Verify != "" {
-		query.Set("pqv", mldsa65Verify)
-	}
-	if tcp.Header.Type == config.TCPHeaderHTTP && tcp.Header.Request != nil {
-		query.Set("headerType", "http")
-		query.Set("path", strings.Join(tcp.Header.Request.Path, ","))
-		if hosts := tcp.Header.Request.Headers["Host"]; len(hosts) > 0 {
-			query.Set("host", strings.Join(hosts, ","))
-		}
 	}
 	value.RawQuery = query.Encode()
 	return value.String()

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
+	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 	"github.com/Relayward/relayward-sdk/contract"
 	"google.golang.org/grpc/codes"
@@ -17,24 +19,35 @@ import (
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/pluginmeta"
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/subscription"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayrelease"
 )
 
 var requiredPermissions = []string{
+	centerpluginv1.PermissionAuthorizationsRead,
 	centerpluginv1.PermissionPortDiagnose,
 	centerpluginv1.PermissionNodeConfigure,
+	centerpluginv1.PermissionNodeDiagnose,
 	centerpluginv1.PermissionServicesWrite,
 }
 
 type Server struct {
 	centerpluginv1.UnimplementedCenterPluginServer
-	version string
-	host    centerpluginv1.PluginHostClient
-	mu      sync.Mutex
-	active  bool
+	version         string
+	host            centerpluginv1.PluginHostClient
+	mu              sync.Mutex
+	active          bool
+	releases        releaseSource
+	versionsMu      sync.Mutex
+	versions        []xrayrelease.Version
+	versionsExpires time.Time
+}
+
+type releaseSource interface {
+	ListVersions(context.Context) ([]xrayrelease.Version, error)
 }
 
 func New(version string, host centerpluginv1.PluginHostClient) *Server {
-	return &Server{version: version, host: host}
+	return &Server{version: version, host: host, releases: xrayrelease.NewClient()}
 }
 
 func (server *Server) GetInfo(context.Context, *centerpluginv1.GetInfoRequest) (*centerpluginv1.GetInfoResponse, error) {
@@ -84,6 +97,12 @@ func (server *Server) InvokeUI(ctx context.Context, request *centerpluginv1.Invo
 		value, err = server.saveConfiguration(ctx, request.Json)
 	case "diagnostics.get":
 		value, err = server.getDiagnostics(ctx, request.Json)
+	case "authorizations.list":
+		value, err = server.listAuthorizations(ctx, request.Json)
+	case "xray-versions.list":
+		value, err = server.listXrayVersions(ctx, request.Json)
+	case "network.addresses", "egress.probe":
+		value, err = server.diagnoseNodePlugin(ctx, request.Method, request.Json)
 	default:
 		return nil, status.Error(codes.Unimplemented, "unsupported Xray UI method")
 	}
@@ -99,6 +118,28 @@ func (server *Server) InvokeUI(ctx context.Context, request *centerpluginv1.Invo
 		return nil, status.Error(codes.Internal, "Xray UI response is invalid")
 	}
 	return response, nil
+}
+
+func (server *Server) listXrayVersions(ctx context.Context, raw []byte) (any, error) {
+	var request struct{}
+	if err := decodeStrict(raw, &request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Xray version list request")
+	}
+	server.versionsMu.Lock()
+	defer server.versionsMu.Unlock()
+	if time.Now().Before(server.versionsExpires) && len(server.versions) > 0 {
+		return map[string]any{"versions": append([]xrayrelease.Version(nil), server.versions...)}, nil
+	}
+	versions, err := server.releases.ListVersions(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "official Xray versions are unavailable")
+	}
+	if len(versions) == 0 {
+		return nil, status.Error(codes.Unavailable, "official Xray version list is empty")
+	}
+	server.versions = append([]xrayrelease.Version(nil), versions...)
+	server.versionsExpires = time.Now().Add(15 * time.Minute)
+	return map[string]any{"versions": append([]xrayrelease.Version(nil), versions...)}, nil
 }
 
 type diagnosticsRequest struct {
@@ -184,12 +225,7 @@ func diagnosticPorts(configuration config.Configuration) []*centerpluginv1.Servi
 		}
 		networks := []string{"tcp"}
 		if service.Type == config.ServiceTypeShadowsocks && service.Shadowsocks != nil {
-			switch service.Shadowsocks.Network {
-			case "udp":
-				networks = []string{"udp"}
-			case "tcp,udp":
-				networks = []string{"tcp", "udp"}
-			}
+			networks = []string{"tcp", "udp"}
 		}
 		for _, network := range networks {
 			result = append(result, &centerpluginv1.ServicePort{
@@ -198,6 +234,48 @@ func diagnosticPorts(configuration config.Configuration) []*centerpluginv1.Servi
 		}
 	}
 	return result
+}
+
+func (server *Server) listAuthorizations(ctx context.Context, raw []byte) (any, error) {
+	var request getConfigurationRequest
+	if err := decodeStrict(raw, &request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid authorization list request")
+	}
+	hostRequest := &centerpluginv1.ListNodeAuthorizationsRequest{NodeId: request.NodeID}
+	response, err := server.host.ListNodeAuthorizations(ctx, hostRequest)
+	if err != nil {
+		return nil, err
+	}
+	if err := centerpluginv1.ValidateListNodeAuthorizationsResponse(hostRequest, response); err != nil {
+		return nil, status.Error(codes.Internal, "Relayward returned invalid node authorizations")
+	}
+	return map[string]any{"authorizations": response.Authorizations}, nil
+}
+
+func (server *Server) diagnoseNodePlugin(ctx context.Context, name string, raw []byte) (any, error) {
+	var envelope struct {
+		NodeID string          `json:"node_id"`
+		Input  json.RawMessage `json:"input"`
+	}
+	if err := decodeStrict(raw, &envelope); err != nil || len(envelope.Input) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "invalid node diagnostic request")
+	}
+	request := &centerpluginv1.DiagnoseNodePluginRequest{NodeId: envelope.NodeID, Name: name, Json: envelope.Input}
+	if err := centerpluginv1.ValidateDiagnoseNodePluginRequest(request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid node diagnostic request")
+	}
+	response, err := server.host.DiagnoseNodePlugin(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if err := centerpluginv1.ValidateDiagnoseNodePluginResponse(request, response); err != nil {
+		return nil, status.Error(codes.Internal, "Relayward returned invalid node diagnostics")
+	}
+	var value map[string]any
+	if err := json.Unmarshal(response.Json, &value); err != nil {
+		return nil, status.Error(codes.Internal, "Relayward returned invalid node diagnostics")
+	}
+	return value, nil
 }
 
 func localStateName(value centerpluginv1.LocalListenerState) string {
@@ -279,30 +357,47 @@ func (server *Server) saveConfiguration(ctx context.Context, raw []byte) (any, e
 		return nil, status.Error(codes.InvalidArgument, "invalid configuration save request")
 	}
 	var configuration config.Configuration
-	var err error
-	if request.ExpectedGeneration == 0 {
+	stored, getErr := server.host.GetNodePluginConfiguration(ctx,
+		&centerpluginv1.GetNodePluginConfigurationRequest{NodeId: request.NodeID})
+	switch {
+	case status.Code(getErr) == codes.NotFound && request.ExpectedGeneration == 0:
+		var err error
 		configuration, err = config.NewFromEditable(request.Configuration)
-	} else {
-		stored, getErr := server.host.GetNodePluginConfiguration(ctx,
-			&centerpluginv1.GetNodePluginConfigurationRequest{NodeId: request.NodeID})
-		if getErr != nil {
-			return nil, getErr
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid Xray plugin configuration")
 		}
+	case getErr != nil:
+		return nil, getErr
+	default:
 		validationRequest := &centerpluginv1.GetNodePluginConfigurationRequest{NodeId: request.NodeID}
 		if centerpluginv1.ValidateNodePluginConfiguration(validationRequest, stored) != nil {
 			return nil, status.Error(codes.Internal, "Relayward returned an invalid Xray configuration")
-		}
-		if stored.Generation != request.ExpectedGeneration {
-			return nil, status.Error(codes.Aborted, "Xray configuration generation changed")
 		}
 		current, decodeErr := config.Decode(stored.Json)
 		if decodeErr != nil {
 			return nil, status.Error(codes.Internal, "stored Xray configuration is invalid")
 		}
-		configuration, err = config.MergeEditable(current, request.Configuration)
-	}
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "invalid Xray plugin configuration")
+		configuration, decodeErr = config.MergeEditable(current, request.Configuration)
+		if decodeErr != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid Xray plugin configuration")
+		}
+		if stored.Generation != request.ExpectedGeneration {
+			encoded, encodeErr := config.Encode(configuration)
+			if encodeErr != nil {
+				return nil, status.Error(codes.Internal, "encode Xray plugin configuration")
+			}
+			digest, digestErr := agentv1.PluginConfigurationDigest(encoded)
+			if digestErr != nil {
+				return nil, status.Error(codes.Internal, "digest Xray plugin configuration")
+			}
+			if stored.Generation != request.ExpectedGeneration+1 || digest != stored.Sha256 {
+				return nil, status.Error(codes.Aborted, "Xray configuration generation changed")
+			}
+			if err := server.replaceServices(ctx, request.NodeID, configuration, stored.Sha256); err != nil {
+				return nil, err
+			}
+			return map[string]any{"generation": stored.Generation, "sha256": stored.Sha256}, nil
+		}
 	}
 	encoded, err := config.Encode(configuration)
 	if err != nil {

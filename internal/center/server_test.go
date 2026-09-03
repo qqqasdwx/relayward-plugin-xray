@@ -3,6 +3,7 @@ package center
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
@@ -14,7 +15,18 @@ import (
 
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/pluginmeta"
+	"github.com/qqqasdwx/relayward-plugin-xray/internal/xrayrelease"
 )
+
+type releaseStub struct {
+	versions []xrayrelease.Version
+	calls    int
+}
+
+func (stub *releaseStub) ListVersions(context.Context) ([]xrayrelease.Version, error) {
+	stub.calls++
+	return append([]xrayrelease.Version(nil), stub.versions...), nil
+}
 
 func TestServerLifecycle(t *testing.T) {
 	t.Parallel()
@@ -54,11 +66,30 @@ func TestServerRejectsPermissions(t *testing.T) {
 
 type hostStub struct {
 	centerpluginv1.PluginHostClient
-	configuration     *centerpluginv1.NodePluginConfiguration
-	configured        *centerpluginv1.ConfigureNodePluginRequest
-	services          *centerpluginv1.ReplaceServicesRequest
-	diagnosticRequest *centerpluginv1.DiagnoseNodePortsRequest
-	diagnostics       *centerpluginv1.DiagnoseNodePortsResponse
+	configuration      *centerpluginv1.NodePluginConfiguration
+	configured         *centerpluginv1.ConfigureNodePluginRequest
+	services           *centerpluginv1.ReplaceServicesRequest
+	diagnosticRequest  *centerpluginv1.DiagnoseNodePortsRequest
+	diagnostics        *centerpluginv1.DiagnoseNodePortsResponse
+	authorizations     *centerpluginv1.ListNodeAuthorizationsResponse
+	nodeDiagnostic     *centerpluginv1.DiagnoseNodePluginResponse
+	nodeDiagnosticReq  *centerpluginv1.DiagnoseNodePluginRequest
+	configureCalls     int
+	replaceCalls       int
+	replaceServicesErr error
+}
+
+func (host *hostStub) ListNodeAuthorizations(_ context.Context, _ *centerpluginv1.ListNodeAuthorizationsRequest,
+	_ ...grpc.CallOption,
+) (*centerpluginv1.ListNodeAuthorizationsResponse, error) {
+	return host.authorizations, nil
+}
+
+func (host *hostStub) DiagnoseNodePlugin(_ context.Context, request *centerpluginv1.DiagnoseNodePluginRequest,
+	_ ...grpc.CallOption,
+) (*centerpluginv1.DiagnoseNodePluginResponse, error) {
+	host.nodeDiagnosticReq = request
+	return host.nodeDiagnostic, nil
 }
 
 func (host *hostStub) DiagnoseNodePorts(_ context.Context, request *centerpluginv1.DiagnoseNodePortsRequest,
@@ -71,7 +102,13 @@ func (host *hostStub) DiagnoseNodePorts(_ context.Context, request *centerplugin
 func (host *hostStub) ReplaceServices(_ context.Context, request *centerpluginv1.ReplaceServicesRequest,
 	_ ...grpc.CallOption,
 ) (*centerpluginv1.ServicesReplaced, error) {
+	host.replaceCalls++
 	host.services = request
+	if host.replaceServicesErr != nil {
+		err := host.replaceServicesErr
+		host.replaceServicesErr = nil
+		return nil, err
+	}
 	return &centerpluginv1.ServicesReplaced{ServiceCount: uint32(len(request.Services))}, nil
 }
 
@@ -87,6 +124,7 @@ func (host *hostStub) GetNodePluginConfiguration(context.Context, *centerpluginv
 func (host *hostStub) ConfigureNodePlugin(_ context.Context, request *centerpluginv1.ConfigureNodePluginRequest,
 	_ ...grpc.CallOption,
 ) (*centerpluginv1.NodePluginConfigured, error) {
+	host.configureCalls++
 	host.configured = request
 	digest, err := agentv1.PluginConfigurationDigest(request.Json)
 	if err != nil {
@@ -134,8 +172,8 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	storedConfiguration, err := config.Decode(host.configured.Json)
 	if err != nil || storedConfiguration.CredentialSeed == "" || len(storedConfiguration.Services) != 2 ||
 		storedConfiguration.Services[0].VLESSReality.PrivateKey == "" || len(host.services.Services) != 2 ||
-		len(storedConfiguration.Routing.Rules) != 1 || storedConfiguration.Routing.Rules[0].RuleID != "block-private" ||
-		!storedConfiguration.DNS.Enabled || len(storedConfiguration.DNS.Servers) != 1 {
+		len(storedConfiguration.AccessRules) != 1 || storedConfiguration.AccessRules[0].RuleID != "block-private" ||
+		len(storedConfiguration.EgressLines) != 1 || storedConfiguration.EgressLines[0].LineID != config.DefaultEgressLineID {
 		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
@@ -160,6 +198,64 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 		updated.Services[1].VLESSReality.PrivateKey != storedConfiguration.Services[1].VLESSReality.PrivateKey ||
 		updated.Services[0].DisplayName != "Updated VLESS" {
 		t.Fatalf("updated configuration = %+v, %v", updated, err)
+	}
+}
+
+func TestConfigurationSaveRetryRepairsServicesWithoutAdvancingGeneration(t *testing.T) {
+	host := &hostStub{replaceServicesErr: status.Error(codes.Internal, "temporary service catalog failure")}
+	server := New("0.1.0", host)
+	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
+		t.Fatal(err)
+	}
+	fullConfiguration, err := config.Decode(testConfigurationJSON(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(saveConfigurationRequest{
+		NodeID: "10000000-0000-4000-8000-000000000001", Configuration: config.Editable(fullConfiguration),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.save", Json: request}); status.Code(err) != codes.Internal {
+		t.Fatalf("first configuration.save code = %v", status.Code(err))
+	}
+	if host.configuration == nil || host.configuration.Generation != 1 || host.configureCalls != 1 || host.replaceCalls != 1 {
+		t.Fatalf("first save host state = %+v, configure calls = %d, replace calls = %d", host.configuration, host.configureCalls, host.replaceCalls)
+	}
+	retried, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.save", Json: request})
+	if err != nil {
+		t.Fatalf("retried configuration.save error = %v", err)
+	}
+	var retriedValue map[string]any
+	decodeErr := json.Unmarshal(retried.GetJson(), &retriedValue)
+	if decodeErr != nil || retriedValue["generation"] != float64(1) {
+		t.Fatalf("retried configuration.save = %s, %v", retried.GetJson(), decodeErr)
+	}
+	if host.configureCalls != 1 || host.replaceCalls != 2 {
+		t.Fatalf("retry configure calls = %d, replace calls = %d", host.configureCalls, host.replaceCalls)
+	}
+
+	updated := config.Editable(fullConfiguration)
+	updated.Services[0].DisplayName = "Updated VLESS"
+	updateRequest, err := json.Marshal(saveConfigurationRequest{
+		NodeID: "10000000-0000-4000-8000-000000000001", ExpectedGeneration: 1, Configuration: updated,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.replaceServicesErr = status.Error(codes.Internal, "temporary service catalog failure")
+	if _, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.save", Json: updateRequest}); status.Code(err) != codes.Internal {
+		t.Fatalf("first updated configuration.save code = %v", status.Code(err))
+	}
+	if host.configuration.Generation != 2 || host.configureCalls != 2 || host.replaceCalls != 3 {
+		t.Fatalf("updated save host state = %+v, configure calls = %d, replace calls = %d", host.configuration, host.configureCalls, host.replaceCalls)
+	}
+	if _, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.save", Json: updateRequest}); err != nil {
+		t.Fatalf("retried updated configuration.save error = %v", err)
+	}
+	if host.configureCalls != 2 || host.replaceCalls != 4 {
+		t.Fatalf("updated retry configure calls = %d, replace calls = %d", host.configureCalls, host.replaceCalls)
 	}
 }
 
@@ -293,10 +389,10 @@ func TestInvokeUIDiagnosesConfiguredPorts(t *testing.T) {
 			Generation: 1, Version: "0.1.0", Sha256: digest, Json: configuration,
 		},
 		diagnostics: &centerpluginv1.DiagnoseNodePortsResponse{Diagnostics: []*centerpluginv1.ServicePortDiagnostic{
-			{ServiceId: "reality-backup", Network: "tcp", LocalPort: 8443,
+			{ServiceId: "reality-backup", Network: "tcp", LocalPort: 28443,
 				ListenAddress: "0.0.0.0", LocalState: centerpluginv1.LocalListenerState_LOCAL_LISTENER_STATE_LISTENING,
 				LocalObservedAtUnixNano: 1},
-			{ServiceId: "reality-main", Network: "tcp", LocalPort: 443,
+			{ServiceId: "reality-main", Network: "tcp", LocalPort: 24443,
 				ListenAddress: "0.0.0.0", LocalState: centerpluginv1.LocalListenerState_LOCAL_LISTENER_STATE_LISTENING,
 				LocalObservedAtUnixNano: 1},
 		}},
@@ -319,33 +415,95 @@ func TestInvokeUIDiagnosesConfiguredPorts(t *testing.T) {
 	}
 }
 
+func TestDiagnosticPortsCoverMaximumShadowsocksServices(t *testing.T) {
+	configuration := config.Configuration{Services: make([]config.Service, config.MaximumServices)}
+	for index := range configuration.Services {
+		configuration.Services[index] = config.Service{
+			Type: config.ServiceTypeShadowsocks, Enabled: true,
+			ServiceID: fmt.Sprintf("shadowsocks-%02d", index), Port: uint16(20000 + index),
+			Shadowsocks: &config.Shadowsocks{Method: config.ShadowsocksMethod2022AES256},
+		}
+	}
+	ports := diagnosticPorts(configuration)
+	if len(ports) != 2*config.MaximumServices {
+		t.Fatalf("diagnosticPorts() count = %d, want %d", len(ports), 2*config.MaximumServices)
+	}
+	request := &centerpluginv1.DiagnoseNodePortsRequest{
+		NodeId: "20000000-0000-4000-8000-000000000002", Ports: ports,
+	}
+	if err := centerpluginv1.ValidateDiagnoseNodePortsRequest(request); err != nil {
+		t.Fatalf("ValidateDiagnoseNodePortsRequest() error = %v", err)
+	}
+}
+
+func TestInvokeUIReadsAuthorizationsAndNodeDiagnostics(t *testing.T) {
+	nodeID := "20000000-0000-4000-8000-000000000002"
+	host := &hostStub{
+		authorizations: &centerpluginv1.ListNodeAuthorizationsResponse{Authorizations: []*centerpluginv1.NodeAuthorization{{
+			Id: "10000000-0000-4000-8000-000000000001", UserIdentifier: "alice", Enabled: true,
+		}}},
+		nodeDiagnostic: &centerpluginv1.DiagnoseNodePluginResponse{Json: []byte(`{"addresses":[{"address":"2001:db8::1","family":"ipv6","interface":"eth0"}]}`)},
+	}
+	server := New("0.1.0", host)
+	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
+		t.Fatal(err)
+	}
+	authorizations, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{
+		Method: "authorizations.list", Json: []byte(`{"node_id":"` + nodeID + `"}`),
+	})
+	if err != nil || !jsonContainsValue(authorizations.GetJson(), "alice") {
+		t.Fatalf("authorizations.list = %s, %v", authorizations.GetJson(), err)
+	}
+	diagnostics, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{
+		Method: "network.addresses", Json: []byte(`{"node_id":"` + nodeID + `","input":{}}`),
+	})
+	if err != nil || host.nodeDiagnosticReq == nil || host.nodeDiagnosticReq.Name != "network.addresses" ||
+		!jsonContainsValue(diagnostics.GetJson(), "2001:db8::1") {
+		t.Fatalf("network.addresses = %s, request %+v, %v", diagnostics.GetJson(), host.nodeDiagnosticReq, err)
+	}
+}
+
+func TestInvokeUIListsAndCachesOfficialXrayVersions(t *testing.T) {
+	releases := &releaseStub{versions: []xrayrelease.Version{
+		{Version: "26.8.1"}, {Version: "26.8.0", Prerelease: true},
+	}}
+	server := New("0.1.0", &hostStub{})
+	server.releases = releases
+	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		response, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "xray-versions.list", Json: []byte(`{}`)})
+		if err != nil || !jsonContainsValue(response.GetJson(), "26.8.1") {
+			t.Fatalf("xray-versions.list = %s, %v", response.GetJson(), err)
+		}
+	}
+	if releases.calls != 1 {
+		t.Fatalf("ListVersions() calls = %d, want 1", releases.calls)
+	}
+}
+
 func testConfigurationJSON(t *testing.T) json.RawMessage {
 	t.Helper()
-	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
+	value, err := config.NewConfiguration("26.7.28", []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443,
+			Port:         24443,
 			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443,
+			Port:         28443,
 			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	value.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{{
+	value.AccessRules = []config.AccessRule{{
 		RuleID: "block-private", DisplayName: "Block private", Enabled: true,
-		DestinationIPs: []string{"192.0.2.0/24"}, OutboundTag: config.RoutingOutboundBlocked,
-	}}}
-	value.DNS = config.DNSConfiguration{
-		Enabled: true, QueryStrategy: config.DNSQueryStrategyUseIPv4,
-		Servers: []config.DNSServer{{
-			ServerID: "system", DisplayName: "System DNS", Enabled: true, Transport: config.DNSTransportSystem,
-		}},
-	}
+		DestinationIPs: []string{"192.0.2.0/24"}, Action: config.AccessActionBlock,
+	}}
 	raw, err := config.Encode(value)
 	if err != nil {
 		t.Fatal(err)

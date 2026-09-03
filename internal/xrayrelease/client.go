@@ -11,18 +11,24 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Relayward/relayward-sdk/contract"
 )
 
 const (
 	assetName              = "Xray-linux-64.zip"
 	defaultAPIBase         = "https://api.github.com/repos/XTLS/Xray-core/releases/tags"
+	defaultReleasesBase    = "https://api.github.com/repos/XTLS/Xray-core/releases"
 	defaultAssetBase       = "https://github.com/XTLS/Xray-core/releases/download"
 	metadataRequestTimeout = 15 * time.Second
 	assetDownloadTimeout   = 5 * time.Minute
 	maximumMetadataSize    = 1 << 20
+	maximumReleaseListSize = 16 << 20
 	MaximumArchiveSize     = 128 << 20
+	maximumReleasePages    = 10
 )
 
 type Asset struct {
@@ -30,6 +36,11 @@ type Asset struct {
 	URL     string
 	Size    int64
 	SHA256  string
+}
+
+type Version struct {
+	Version    string `json:"version"`
+	Prerelease bool   `json:"prerelease"`
 }
 
 type Source interface {
@@ -40,6 +51,7 @@ type Source interface {
 type Client struct {
 	httpClient      *http.Client
 	apiBase         string
+	releasesBase    string
 	assetBase       string
 	metadataTimeout time.Duration
 	downloadTimeout time.Duration
@@ -49,10 +61,77 @@ func NewClient() *Client {
 	return &Client{
 		httpClient:      &http.Client{},
 		apiBase:         defaultAPIBase,
+		releasesBase:    defaultReleasesBase,
 		assetBase:       defaultAssetBase,
 		metadataTimeout: metadataRequestTimeout,
 		downloadTimeout: assetDownloadTimeout,
 	}
+}
+
+func (client *Client) ListVersions(ctx context.Context) ([]Version, error) {
+	requestContext, cancel := context.WithTimeout(ctx, effectiveTimeout(client.metadataTimeout, metadataRequestTimeout))
+	defer cancel()
+	base := strings.TrimRight(client.releasesBase, "/")
+	if base == "" {
+		base = defaultReleasesBase
+	}
+	versions := make([]Version, 0, 100)
+	for page := 1; page <= maximumReleasePages; page++ {
+		endpoint := base + "?per_page=100&page=" + strconv.Itoa(page)
+		request, err := http.NewRequestWithContext(requestContext, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create Xray release list request: %w", err)
+		}
+		request.Header.Set("Accept", "application/vnd.github+json")
+		request.Header.Set("User-Agent", "relayward-plugin-xray")
+		response, err := client.httpClient.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("query official Xray releases: %w", err)
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(response.Body, maximumReleaseListSize+1))
+		closeErr := response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("query official Xray releases: unexpected HTTP status %d", response.StatusCode)
+		}
+		if readErr != nil || closeErr != nil {
+			return nil, errors.New("read official Xray releases")
+		}
+		if len(raw) > maximumReleaseListSize {
+			return nil, errors.New("official Xray release list exceeds size limit")
+		}
+		var releases []struct {
+			TagName    string `json:"tag_name"`
+			Draft      bool   `json:"draft"`
+			Prerelease bool   `json:"prerelease"`
+			Assets     []struct {
+				Name               string `json:"name"`
+				Size               int64  `json:"size"`
+				Digest             string `json:"digest"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+			} `json:"assets"`
+		}
+		if err := json.Unmarshal(raw, &releases); err != nil {
+			return nil, fmt.Errorf("decode official Xray releases: %w", err)
+		}
+		for _, release := range releases {
+			version, ok := strings.CutPrefix(release.TagName, "v")
+			if !ok || release.Draft || contract.ValidateSemanticVersion(version) != nil || strings.ContainsAny(version, "-+") {
+				continue
+			}
+			for _, candidate := range release.Assets {
+				digest, digestOK := strings.CutPrefix(candidate.Digest, "sha256:")
+				asset := Asset{Version: version, URL: candidate.BrowserDownloadURL, Size: candidate.Size, SHA256: digest}
+				if candidate.Name == assetName && digestOK && client.validateAsset(asset) == nil {
+					versions = append(versions, Version{Version: version, Prerelease: release.Prerelease})
+					break
+				}
+			}
+		}
+		if len(releases) < 100 {
+			return versions, nil
+		}
+	}
+	return nil, errors.New("official Xray release list exceeds page limit")
 }
 
 func (client *Client) Resolve(ctx context.Context, version string) (Asset, error) {

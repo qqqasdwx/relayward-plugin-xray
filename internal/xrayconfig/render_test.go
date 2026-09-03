@@ -1,417 +1,171 @@
 package xrayconfig
 
 import (
-	"bytes"
+	"encoding/base64"
 	"encoding/json"
-	"net"
-	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/qqqasdwx/relayward-plugin-xray/internal/config"
 )
 
-func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
+func TestRenderManagedServicesAndEgressLines(t *testing.T) {
 	t.Parallel()
-	value := testConfiguration(t)
-	value.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{
-		{
-			RuleID: "block-private", DisplayName: "Block private", Enabled: true,
-			SourceIPs: []string{"198.51.100.10"}, SourcePort: "1000-2000", VLESSRoute: "8443",
-			Network: "tcp", Attributes: map[string]string{"user-agent": "curl.*"},
-			DestinationIPs: []string{"192.0.2.0/24"}, DestinationPort: "443",
-			Users: []string{"relayward:test"}, InboundTags: []string{"reality-main"},
-			OutboundTag: config.RoutingOutboundBlocked,
-		},
-		{
-			RuleID: "allow-example", DisplayName: "Allow example", Enabled: true,
-			Domains: []string{"domain:example.com"}, Protocols: []string{"tls"}, OutboundTag: config.RoutingOutboundDirect,
-		},
-	}}
-	value.DNS = config.DNSConfiguration{
-		Enabled: true, QueryStrategy: config.DNSQueryStrategyUseIPv4,
-		Servers: []config.DNSServer{
-			{
-				ServerID: "regional", DisplayName: "Regional DNS", Enabled: true,
-				Transport: config.DNSTransportUDP, Address: "1.1.1.1", Port: 53,
-				Domains: []string{"example.com"},
-			},
-			{ServerID: "system", DisplayName: "System DNS", Enabled: true, Transport: config.DNSTransportSystem},
-			{
-				ServerID: "disabled", DisplayName: "Disabled DNS", Enabled: false,
-				Transport: config.DNSTransportDoH, Address: "https://dns.google/dns-query",
-			},
-		},
+	configuration := testConfiguration()
+	raw, err := Render(configuration)
+	if err != nil {
+		t.Fatal(err)
 	}
-	raw, err := Render(value)
-	if err != nil || !json.Valid(raw) {
-		t.Fatalf("Render() = %s, %v", raw, err)
-	}
-	var generated struct {
-		API struct {
-			Services []string `json:"services"`
-		} `json:"api"`
-		Inbounds []struct {
-			Tag            string `json:"tag"`
-			Protocol       string `json:"protocol"`
-			StreamSettings struct {
-				RealitySettings struct {
-					Target string `json:"target"`
-				} `json:"realitySettings"`
-			} `json:"streamSettings"`
-			Sniffing struct {
-				Enabled      bool     `json:"enabled"`
-				DestOverride []string `json:"destOverride"`
-				RouteOnly    bool     `json:"routeOnly"`
-			} `json:"sniffing"`
-		} `json:"inbounds"`
-		Outbounds []struct {
-			Tag      string `json:"tag"`
-			Protocol string `json:"protocol"`
-			Settings struct {
-				DomainStrategy string `json:"domainStrategy"`
-			} `json:"settings"`
-		} `json:"outbounds"`
-		DNS struct {
-			QueryStrategy          string `json:"queryStrategy"`
-			DisableFallbackIfMatch bool   `json:"disableFallbackIfMatch"`
-			Servers                []struct {
-				Address       string   `json:"address"`
-				Port          uint16   `json:"port"`
-				Domains       []string `json:"domains"`
-				QueryStrategy string   `json:"queryStrategy"`
-				SkipFallback  bool     `json:"skipFallback"`
-			} `json:"servers"`
-		} `json:"dns"`
-		Policy struct {
-			Levels map[string]struct {
-				StatsUserOnline bool `json:"statsUserOnline"`
-			} `json:"levels"`
-		} `json:"policy"`
-		Routing struct {
-			DomainStrategy string `json:"domainStrategy"`
-			Rules          []struct {
-				RuleTag     string            `json:"ruleTag"`
-				OutboundTag string            `json:"outboundTag"`
-				Domain      []string          `json:"domain"`
-				IP          []string          `json:"ip"`
-				Protocol    []string          `json:"protocol"`
-				InboundTag  []string          `json:"inboundTag"`
-				SourceIP    []string          `json:"sourceIP"`
-				SourcePort  string            `json:"sourcePort"`
-				VLESSRoute  string            `json:"vlessRoute"`
-				Network     string            `json:"network"`
-				Port        string            `json:"port"`
-				User        []string          `json:"user"`
-				Attributes  map[string]string `json:"attrs"`
-			} `json:"rules"`
+	var rendered struct {
+		DNS       map[string]any   `json:"dns"`
+		Inbounds  []map[string]any `json:"inbounds"`
+		Outbounds []map[string]any `json:"outbounds"`
+		Routing   struct {
+			Rules []map[string]any `json:"rules"`
 		} `json:"routing"`
 	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
+	if err := json.Unmarshal(raw, &rendered); err != nil {
 		t.Fatal(err)
 	}
-	if len(generated.API.Services) != 3 || generated.API.Services[1] != "RoutingService" ||
-		len(generated.Inbounds) != 5 || generated.Inbounds[1].Tag != "reality-backup" ||
-		generated.Inbounds[1].Protocol != "vless" ||
-		generated.Inbounds[1].StreamSettings.RealitySettings.Target == "www.cloudflare.com:443" ||
-		!generated.Inbounds[1].Sniffing.Enabled || !generated.Inbounds[1].Sniffing.RouteOnly ||
-		len(generated.Inbounds[1].Sniffing.DestOverride) != 3 ||
-		generated.Inbounds[2].Tag != realityTunnelTag("reality-backup") || generated.Inbounds[2].Protocol != "tunnel" ||
-		generated.Inbounds[3].Tag != "reality-main" || generated.Inbounds[4].Tag != realityTunnelTag("reality-main") ||
-		len(generated.Outbounds) != 2 ||
-		generated.Outbounds[1].Tag != "blocked" || generated.Outbounds[1].Protocol != "blackhole" ||
-		generated.Outbounds[0].Settings.DomainStrategy != "AsIs" ||
-		!generated.Policy.Levels["0"].StatsUserOnline {
-		t.Fatalf("generated Xray configuration = %+v", generated)
+	if rendered.DNS["queryStrategy"] != "UseIP" || len(rendered.DNS["servers"].([]any)) != 1 {
+		t.Fatalf("managed DNS = %+v", rendered.DNS)
 	}
-	if len(generated.Routing.Rules) != 7 || generated.Routing.Rules[0].RuleTag != APIRuleTag ||
-		generated.Routing.DomainStrategy != "IPIfNonMatch" ||
-		generated.Routing.Rules[1].RuleTag != realityTunnelAllowRuleTag("reality-backup") ||
-		generated.Routing.Rules[1].Domain[0] != "full:www.cloudflare.com" ||
-		generated.Routing.Rules[2].RuleTag != realityTunnelBlockRuleTag("reality-backup") ||
-		generated.Routing.Rules[5].RuleTag != "relayward-static-block-private" ||
-		generated.Routing.Rules[5].IP[0] != "192.0.2.0/24" ||
-		generated.Routing.Rules[5].SourceIP[0] != "198.51.100.10" ||
-		generated.Routing.Rules[5].SourcePort != "1000-2000" || generated.Routing.Rules[5].VLESSRoute != "8443" ||
-		generated.Routing.Rules[5].Network != "tcp" || generated.Routing.Rules[5].Port != "443" ||
-		generated.Routing.Rules[5].User[0] != "relayward:test" || generated.Routing.Rules[5].InboundTag[0] != "reality-main" ||
-		generated.Routing.Rules[5].Attributes["user-agent"] != "curl.*" ||
-		generated.Routing.Rules[6].Domain[0] != "domain:example.com" ||
-		generated.Routing.Rules[6].Protocol[0] != "tls" || len(generated.Routing.Rules[6].InboundTag) != 0 {
-		t.Fatalf("generated routing configuration = %+v", generated.Routing)
+	api := findTagged(t, rendered.Inbounds, APIRuleTag)
+	if api["listen"] != "127.0.0.1" || api["port"] != float64(config.ManagedAPIPort) {
+		t.Fatalf("API inbound = %+v", api)
 	}
-	if generated.DNS.QueryStrategy != "UseIPv4" || !generated.DNS.DisableFallbackIfMatch ||
-		len(generated.DNS.Servers) != 2 || generated.DNS.Servers[0].Address != "1.1.1.1" ||
-		generated.DNS.Servers[0].Port != 53 || generated.DNS.Servers[0].Domains[0] != "domain:example.com" ||
-		!generated.DNS.Servers[0].SkipFallback || generated.DNS.Servers[1].Address != "localhost" ||
-		generated.DNS.Servers[1].QueryStrategy != "UseIPv4" {
-		t.Fatalf("generated DNS configuration = %+v", generated.DNS)
+	vless := findTagged(t, rendered.Inbounds, "reality-main")
+	if _, exists := vless["listen"]; exists || vless["port"] != float64(24443) || vless["protocol"] != "vless" {
+		t.Fatalf("VLESS inbound = %+v", vless)
 	}
-}
-
-func TestRenderOmitsDisabledServices(t *testing.T) {
-	t.Parallel()
-	value := testConfiguration(t)
-	value.Services[1].Enabled = false
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generated struct {
-		Inbounds []struct {
-			Sniffing json.RawMessage `json:"sniffing"`
-		} `json:"inbounds"`
-		DNS       json.RawMessage `json:"dns"`
-		Outbounds []struct {
-			Settings struct {
-				DomainStrategy string `json:"domainStrategy"`
-			} `json:"settings"`
-		} `json:"outbounds"`
-	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
-		t.Fatal(err)
-	}
-	if len(generated.Inbounds) != 3 {
-		t.Fatalf("inbounds = %d, want API plus one VLESS and its tunnel", len(generated.Inbounds))
-	}
-	if len(generated.DNS) != 0 || generated.Outbounds[0].Settings.DomainStrategy != "AsIs" {
-		t.Fatal("disabled DNS unexpectedly changed the Xray configuration")
-	}
-}
-
-func TestRenderBuildsFreedomAndBlackholeOutbounds(t *testing.T) {
-	t.Parallel()
-	value := testConfiguration(t)
-	value.Outbounds = append(value.Outbounds,
-		config.Outbound{
-			Tag: "IPv4", Protocol: config.OutboundProtocolFreedom,
-			Freedom: &config.FreedomOutboundSettings{
-				DomainStrategy: "UseIPv4", Redirect: "127.0.0.1:1080", UserLevel: 1, ProxyProtocol: 2,
-				Fragment:   &config.FreedomFragment{Packets: "tlshello", Length: "100-200", Interval: "10-20", MaxSplit: "300-400"},
-				Noises:     []config.FreedomNoise{{Type: "rand", Packet: "10-20", Delay: "10-16", ApplyTo: "ipv4"}},
-				FinalRules: []config.FreedomFinalRule{{Action: "block", Network: "tcp", Port: "443", IPs: []string{"geoip:private"}, BlockDelay: "5000-10000"}},
-			},
-		},
-		config.Outbound{Tag: "ads_blocked", Protocol: config.OutboundProtocolBlackhole, Blackhole: &config.BlackholeOutboundSettings{ResponseType: "http"}},
-	)
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generated struct {
-		Outbounds []struct {
-			Tag      string         `json:"tag"`
-			Protocol string         `json:"protocol"`
-			Settings map[string]any `json:"settings"`
-		} `json:"outbounds"`
-	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
-		t.Fatal(err)
-	}
-	if len(generated.Outbounds) != 4 || generated.Outbounds[2].Tag != "IPv4" || generated.Outbounds[2].Protocol != "freedom" ||
-		generated.Outbounds[2].Settings["domainStrategy"] != "UseIPv4" || generated.Outbounds[2].Settings["redirect"] != "127.0.0.1:1080" ||
-		generated.Outbounds[2].Settings["proxyProtocol"] != float64(2) || len(generated.Outbounds[2].Settings["finalRules"].([]any)) != 1 ||
-		generated.Outbounds[3].Tag != "ads_blocked" || generated.Outbounds[3].Protocol != "blackhole" {
-		t.Fatalf("rendered outbounds = %+v", generated.Outbounds)
-	}
-	response := generated.Outbounds[3].Settings["response"].(map[string]any)
-	if response["type"] != "http" {
-		t.Fatalf("blackhole response = %+v", response)
-	}
-}
-
-func TestRenderShadowsocks2022Inbound(t *testing.T) {
-	t.Parallel()
-	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{{
-		Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main", DisplayName: "Shadowsocks Main",
-		Listen: "0.0.0.0", Port: 8388,
-		Shadowsocks: &config.EditableShadowsocks{
-			Method: config.ShadowsocksMethod2022AES256, Network: config.ShadowsocksNetworkTCPUDP,
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generated struct {
-		Inbounds []struct {
-			Tag      string         `json:"tag"`
-			Protocol string         `json:"protocol"`
-			Settings map[string]any `json:"settings"`
-		} `json:"inbounds"`
-	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
-		t.Fatal(err)
-	}
-	if len(generated.Inbounds) != 2 || generated.Inbounds[1].Tag != "shadowsocks-main" ||
-		generated.Inbounds[1].Protocol != "shadowsocks" ||
-		generated.Inbounds[1].Settings["method"] != config.ShadowsocksMethod2022AES256 ||
-		generated.Inbounds[1].Settings["password"] != value.Services[0].Shadowsocks.ServerKey ||
-		generated.Inbounds[1].Settings["network"] != config.ShadowsocksNetworkTCPUDP ||
-		len(generated.Inbounds[1].Settings["clients"].([]any)) != 1 ||
-		generated.Inbounds[1].Settings["clients"].([]any)[0].(map[string]any)["email"] != "relayward:bootstrap:shadowsocks-main" {
-		t.Fatalf("generated Shadowsocks inbound = %s", raw)
-	}
-}
-
-func TestRenderVLESSRealityStaticContract(t *testing.T) {
-	t.Parallel()
-	value := testConfiguration(t)
-	service := &value.Services[0]
-	service.TCP.AcceptProxyProtocol = true
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var root map[string]any
-	if err := json.Unmarshal(raw, &root); err != nil {
-		t.Fatal(err)
-	}
-	var inbound, tunnel map[string]any
-	for _, candidate := range root["inbounds"].([]any) {
-		item := candidate.(map[string]any)
-		if item["tag"] == service.ServiceID {
-			inbound = item
-		}
-		if item["tag"] == realityTunnelTag(service.ServiceID) {
-			tunnel = item
-		}
-	}
-	if inbound == nil || tunnel == nil {
-		t.Fatal("rendered VLESS inbound or tunnel was not found")
-	}
-	settings := inbound["settings"].(map[string]any)
-	stream := inbound["streamSettings"].(map[string]any)
+	vlessSettings := vless["settings"].(map[string]any)
+	stream := vless["streamSettings"].(map[string]any)
 	reality := stream["realitySettings"].(map[string]any)
 	rawSettings := stream["rawSettings"].(map[string]any)
-	if len(settings) != 1 || settings["decryption"] != "none" || stream["method"] != "raw" || stream["security"] != "reality" ||
-		len(stream) != 4 || rawSettings["acceptProxyProtocol"] != true || reality["minClientVer"] != "1.0.0" ||
-		reality["xver"] != float64(2) ||
-		reality["serverNames"].([]any)[0] != "www.cloudflare.com" || reality["shortIds"].([]any)[0] != service.VLESSReality.ShortIDs[0] ||
-		reality["limitFallbackUpload"].(map[string]any)["afterBytes"] != float64(10*1024*1024) ||
-		reality["limitFallbackDownload"].(map[string]any)["bytesPerSec"] != float64(1024*1024) {
-		t.Fatalf("rendered VLESS inbound = %s", raw)
+	if vlessSettings["decryption"] != "none" || stream["method"] != "raw" || stream["security"] != "reality" ||
+		rawSettings["acceptProxyProtocol"] != true || reality["xver"] != float64(2) ||
+		reality["minClientVer"] != "1.0.0" || reality["privateKey"] != configuration.Services[0].VLESSReality.PrivateKey ||
+		reality["shortIds"].([]any)[0] != configuration.Services[0].VLESSReality.ShortID {
+		t.Fatalf("VLESS settings = %+v", vless)
 	}
-	for _, field := range []string{"network", "tcpSettings", "sockopt", "finalmask"} {
-		if _, exists := stream[field]; exists {
-			t.Fatalf("streamSettings unexpectedly contains %q: %s", field, raw)
-		}
+	tunnelPort, err := strconv.Atoi(strings.TrimPrefix(reality["target"].(string), "127.0.0.1:"))
+	if err != nil || tunnelPort < realityTunnelPortStart {
+		t.Fatalf("REALITY target = %q", reality["target"])
 	}
-	for _, field := range []string{"show", "masterKeyLog", "mldsa65Seed", "maxClientVer", "maxTimeDiff"} {
-		if _, exists := reality[field]; exists {
-			t.Fatalf("realitySettings unexpectedly contains %q: %s", field, raw)
-		}
-	}
-	tunnelPort := uint16(tunnel["port"].(float64))
-	targetHost, targetPort, err := net.SplitHostPort(reality["target"].(string))
-	if err != nil || targetHost != "127.0.0.1" || targetPort != strconv.Itoa(int(tunnelPort)) ||
-		tunnel["listen"] != "127.0.0.1" || tunnel["protocol"] != "tunnel" {
-		t.Fatalf("rendered REALITY tunnel = %s", raw)
-	}
+	tunnel := findTagged(t, rendered.Inbounds, realityTunnelTag("reality-main"))
 	tunnelSettings := tunnel["settings"].(map[string]any)
 	tunnelStream := tunnel["streamSettings"].(map[string]any)
-	tunnelRawSettings := tunnelStream["rawSettings"].(map[string]any)
-	if tunnelSettings["rewriteAddress"] != "www.cloudflare.com" || tunnelSettings["rewritePort"] != float64(443) ||
-		tunnelSettings["allowedNetwork"] != "tcp" || tunnelStream["method"] != "raw" ||
-		tunnelStream["security"] != "none" || tunnelRawSettings["acceptProxyProtocol"] != true {
-		t.Fatalf("rendered REALITY tunnel settings = %s", raw)
+	if tunnel["listen"] != "127.0.0.1" || tunnel["port"] != float64(tunnelPort) || tunnel["protocol"] != "tunnel" ||
+		tunnelSettings["rewriteAddress"] != "www.tesla.com" || tunnelSettings["rewritePort"] != float64(443) ||
+		tunnelStream["rawSettings"].(map[string]any)["acceptProxyProtocol"] != true {
+		t.Fatalf("REALITY tunnel = %+v", tunnel)
+	}
+	shadowsocks := findTagged(t, rendered.Inbounds, "shadowsocks-main")
+	ssSettings := shadowsocks["settings"].(map[string]any)
+	if shadowsocks["protocol"] != "shadowsocks" || ssSettings["network"] != "tcp,udp" ||
+		ssSettings["method"] != config.ShadowsocksMethod2022AES256 || len(ssSettings["clients"].([]any)) != 1 {
+		t.Fatalf("Shadowsocks inbound = %+v", shadowsocks)
+	}
+
+	defaultOutbound := findTagged(t, rendered.Outbounds, config.EgressOutboundTag(config.DefaultEgressLineID))
+	if defaultOutbound["protocol"] != "freedom" {
+		t.Fatalf("default outbound = %+v", defaultOutbound)
+	}
+	ipv6Outbound := findTagged(t, rendered.Outbounds, config.EgressOutboundTag("ipv6"))
+	if ipv6Outbound["sendThrough"] != "2001:db8::10" ||
+		ipv6Outbound["settings"].(map[string]any)["domainStrategy"] != "UseIPv6" {
+		t.Fatalf("IPv6 outbound = %+v", ipv6Outbound)
+	}
+	socksOutbound := findTagged(t, rendered.Outbounds, config.EgressOutboundTag("socks-us"))
+	if socksOutbound["protocol"] != "socks" || socksOutbound["settings"].(map[string]any)["user"] != "alice" {
+		t.Fatalf("SOCKS outbound = %+v", socksOutbound)
+	}
+	ssOutbound := findTagged(t, rendered.Outbounds, config.EgressOutboundTag("ss-jp"))
+	if ssOutbound["protocol"] != "shadowsocks" || ssOutbound["settings"].(map[string]any)["password"] != "server-password" {
+		t.Fatalf("Shadowsocks outbound = %+v", ssOutbound)
+	}
+	if findTagged(t, rendered.Outbounds, SystemDirectOutboundTag)["protocol"] != "freedom" ||
+		findTagged(t, rendered.Outbounds, BlockedOutboundTag)["protocol"] != "blackhole" {
+		t.Fatalf("managed outbounds = %+v", rendered.Outbounds)
 	}
 }
 
-func TestRenderVLESSRealityGoldenConfiguration(t *testing.T) {
+func TestInternalPortsAreStableAndAvoidManagedListeners(t *testing.T) {
 	t.Parallel()
-	value := config.Configuration{
-		XrayVersion: "26.7.28", APIPort: 10085,
-		CredentialSeed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		Services: []config.Service{{
-			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "vless-main", DisplayName: "VLESS Main",
-			Listen: "0.0.0.0", Port: 54321,
-			TCP:      config.TCPSettings{AcceptProxyProtocol: true, Header: config.TCPHeader{Type: config.TCPHeaderNone}},
-			Sniffing: config.Sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}, RouteOnly: true},
-			VLESSReality: &config.VLESSReality{
-				Decryption: "none", Encryption: "none", Xver: 2, Target: "addons.mozilla.org:443",
-				ServerNames: []string{"addons.mozilla.org"},
-				PrivateKey:  "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
-				ShortIDs:    []string{"0011223344556677"}, MinClientVersion: "1.0.0",
-				Flow: config.VLESSVisionFlow, Fingerprint: "chrome", SpiderX: "/",
-			},
-		}},
-		Outbounds: config.DefaultOutbounds(),
+	configuration := testConfiguration()
+	first, exists, err := DiagnosticPort(configuration, "ipv6")
+	if err != nil || !exists {
+		t.Fatalf("DiagnosticPort() = %d, %t, %v", first, exists, err)
 	}
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
+	second, _, err := DiagnosticPort(configuration, "ipv6")
+	if err != nil || first != second {
+		t.Fatalf("DiagnosticPort() is unstable: %d, %d, %v", first, second, err)
 	}
-	var formatted bytes.Buffer
-	if err := json.Indent(&formatted, raw, "", "  "); err != nil {
-		t.Fatal(err)
+	for _, service := range configuration.Services {
+		if first == service.Port {
+			t.Fatalf("diagnostic port %d conflicts with service %q", first, service.ServiceID)
+		}
 	}
-	formatted.WriteByte('\n')
-	expected, err := os.ReadFile("testdata/vless_reality.golden.json")
-	if err != nil {
-		t.Fatalf("read golden configuration: %v\ngenerated:\n%s", err, formatted.Bytes())
-	}
-	if !bytes.Equal(formatted.Bytes(), expected) {
-		t.Fatalf("generated VLESS configuration does not match testdata/vless_reality.golden.json\ngenerated:\n%s", formatted.Bytes())
+	if _, exists, err := DiagnosticPort(configuration, "missing"); err != nil || exists {
+		t.Fatalf("DiagnosticPort(missing) = %t, %v", exists, err)
 	}
 }
 
-func TestRenderDNSLocalTransports(t *testing.T) {
-	t.Parallel()
-	value := testConfiguration(t)
-	value.DNS = config.DNSConfiguration{
-		Enabled: true, QueryStrategy: config.DNSQueryStrategyUseIPv6,
-		Servers: []config.DNSServer{
-			{ServerID: "tcp", DisplayName: "TCP", Enabled: true, Transport: config.DNSTransportTCP, Address: "2001:4860:4860::8888", Port: 53},
-			{ServerID: "doh", DisplayName: "DoH", Enabled: true, Transport: config.DNSTransportDoH, Address: "https://dns.google/dns-query"},
-		},
-	}
-	raw, err := Render(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generated struct {
-		DNS struct {
-			Servers []struct {
-				Address string `json:"address"`
-			} `json:"servers"`
-		} `json:"dns"`
-	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
-		t.Fatal(err)
-	}
-	if len(generated.DNS.Servers) != 2 || generated.DNS.Servers[0].Address != "tcp+local://[2001:4860:4860::8888]" ||
-		generated.DNS.Servers[1].Address != "https+local://dns.google/dns-query" {
-		t.Fatalf("generated DNS transports = %+v", generated.DNS.Servers)
-	}
-}
-
-func TestSupportsOnlyRegisteredServiceTypes(t *testing.T) {
-	t.Parallel()
-	if !SupportsServiceType(config.ServiceTypeVLESSReality) || !SupportsServiceType(config.ServiceTypeShadowsocks) || SupportsServiceType("unknown") {
-		t.Fatal("Xray renderer service type support is inconsistent")
-	}
-}
-
-func testConfiguration(t *testing.T) config.Configuration {
+func findTagged(t *testing.T, values []map[string]any, tag string) map[string]any {
 	t.Helper()
-	value, err := config.NewConfiguration("26.7.28", 10085, []config.EditableService{
-		{
-			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443,
-			VLESSReality: &config.EditableVLESSReality{Target: "www.microsoft.com:443"},
-		},
-		{
-			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443,
-			VLESSReality: &config.EditableVLESSReality{Target: "www.cloudflare.com:443"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, value := range values {
+		if value["tag"] == tag {
+			return value
+		}
 	}
-	return value
+	t.Fatalf("tag %q not found in %+v", tag, values)
+	return nil
+}
+
+func testConfiguration() config.Configuration {
+	return config.Configuration{
+		XrayVersion: "26.7.28", APIPort: config.ManagedAPIPort,
+		CredentialSeed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Services: []config.Service{
+			{
+				Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main",
+				DisplayName: "Reality Main", Port: 24443, AcceptProxyProtocol: true,
+				VLESSReality: &config.VLESSReality{
+					Target: "www.tesla.com:443", PrivateKey: "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+					ShortID: "0011223344556677",
+				},
+			},
+			{
+				Type: config.ServiceTypeShadowsocks, Enabled: true, ServiceID: "shadowsocks-main",
+				DisplayName: "Shadowsocks Main", Port: 28443,
+				Shadowsocks: &config.Shadowsocks{
+					Method:    config.ShadowsocksMethod2022AES256,
+					ServerKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("s", 32))),
+				},
+			},
+		},
+		EgressLines: []config.EgressLine{
+			{
+				LineID: config.DefaultEgressLineID, DisplayName: "Default", Enabled: true,
+				Type: config.EgressTypeDirect, Direct: &config.DirectEgress{},
+			},
+			{
+				LineID: "ipv6", DisplayName: "IPv6", Enabled: true, VLESSRoute: 6,
+				Type: config.EgressTypeDirect, Direct: &config.DirectEgress{SendThrough: "2001:db8::10"},
+			},
+			{
+				LineID: "socks-us", DisplayName: "SOCKS US", Enabled: true, VLESSRoute: 10,
+				Type:   config.EgressTypeSOCKS5,
+				SOCKS5: &config.SOCKS5Egress{Address: "proxy.example.com", Port: 1080, Username: "alice", Password: "secret"},
+			},
+			{
+				LineID: "ss-jp", DisplayName: "SS JP", Enabled: true, VLESSRoute: 20,
+				Type: config.EgressTypeShadowsocks,
+				Shadowsocks: &config.ShadowsocksEgress{
+					Address: "ss.example.com", Port: 8388, Method: config.ShadowsocksMethod2022AES256, Password: "server-password",
+				},
+			},
+		},
+	}
 }

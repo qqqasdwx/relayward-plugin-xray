@@ -11,11 +11,6 @@ import (
 )
 
 const (
-	RoutingOutboundDirect  = OutboundTagDirect
-	RoutingOutboundBlocked = OutboundTagBlocked
-)
-
-const (
 	RoutingDomainSubstring = iota
 	RoutingDomainRegex
 	RoutingDomainSuffix
@@ -28,33 +23,33 @@ const (
 )
 
 var (
-	routingRuleIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	routingAssetPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	routingAttributeKey  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	routingRuleIDPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	routingAssetPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	routingAttributeKey    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	authorizationIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
-type RoutingConfiguration struct {
-	Rules []RoutingRule `json:"rules"`
-}
+const (
+	AccessActionBlock  = "block"
+	AccessActionEgress = "egress"
+)
 
-// RoutingRule mirrors the field-rule surface exposed by 3x-ui. RuleID and
-// DisplayName are Relayward metadata and are not rendered into Xray.
-type RoutingRule struct {
-	RuleID          string            `json:"rule_id"`
-	DisplayName     string            `json:"display_name"`
-	Enabled         bool              `json:"enabled"`
-	SourceIPs       []string          `json:"source_ips"`
-	SourcePort      string            `json:"source_port"`
-	VLESSRoute      string            `json:"vless_route"`
-	Network         string            `json:"network"`
-	Protocols       []string          `json:"protocols"`
-	Attributes      map[string]string `json:"attributes"`
-	DestinationIPs  []string          `json:"destination_ips"`
-	Domains         []string          `json:"domains"`
-	Users           []string          `json:"users"`
-	DestinationPort string            `json:"destination_port"`
-	InboundTags     []string          `json:"inbound_tags"`
-	OutboundTag     string            `json:"outbound_tag"`
+// AccessRule uses OR semantics within a field and AND semantics across fields.
+// RuleID is stable configuration identity and is not shown as operator-facing copy.
+type AccessRule struct {
+	RuleID           string   `json:"rule_id"`
+	DisplayName      string   `json:"display_name"`
+	Enabled          bool     `json:"enabled"`
+	SourceIPs        []string `json:"source_ips"`
+	Network          string   `json:"network"`
+	Protocols        []string `json:"protocols"`
+	DestinationIPs   []string `json:"destination_ips"`
+	Domains          []string `json:"domains"`
+	DestinationPort  string   `json:"destination_port"`
+	AuthorizationIDs []string `json:"authorization_ids"`
+	ServiceIDs       []string `json:"service_ids"`
+	Action           string   `json:"action"`
+	EgressLineID     string   `json:"egress_line_id,omitempty"`
 }
 
 type RoutingPortRange struct {
@@ -79,21 +74,21 @@ type RoutingIPExpression struct {
 	Reverse bool
 }
 
-func validateRouting(value RoutingConfiguration, services []Service, outbounds []Outbound, xrayVersion string) error {
-	if len(value.Rules) > MaximumRoutingRules {
-		return fmt.Errorf("routing.rules: must contain at most %d rules", MaximumRoutingRules)
+func validateAccessRules(rules []AccessRule, services []Service, lines []EgressLine, xrayVersion string) error {
+	if len(rules) > MaximumAccessRules {
+		return fmt.Errorf("access_rules: must contain at most %d rules", MaximumAccessRules)
 	}
 	serviceIDs := make(map[string]struct{}, len(services))
 	for _, service := range services {
 		serviceIDs[service.ServiceID] = struct{}{}
 	}
-	outboundTags := make(map[string]struct{}, len(outbounds))
-	for _, outbound := range outbounds {
-		outboundTags[outbound.Tag] = struct{}{}
+	egressLines := make(map[string]EgressLine, len(lines))
+	for _, line := range lines {
+		egressLines[line.LineID] = line
 	}
-	seenIDs := make(map[string]struct{}, len(value.Rules))
-	for index, rule := range value.Rules {
-		field := fmt.Sprintf("routing.rules[%d]", index)
+	seenIDs := make(map[string]struct{}, len(rules))
+	for index, rule := range rules {
+		field := fmt.Sprintf("access_rules[%d]", index)
 		if !routingRuleIDPattern.MatchString(rule.RuleID) {
 			return fmt.Errorf("%s.rule_id: must match %s", field, routingRuleIDPattern)
 		}
@@ -104,9 +99,6 @@ func validateRouting(value RoutingConfiguration, services []Service, outbounds [
 		if err := validateDisplayName(rule.DisplayName); err != nil {
 			return fmt.Errorf("%s.display_name: %w", field, err)
 		}
-		if _, exists := outboundTags[rule.OutboundTag]; !exists {
-			return fmt.Errorf("%s.outbound_tag: unknown outbound", field)
-		}
 		if err := validateRoutingStringList(rule.SourceIPs, field+".source_ips", validateRoutingIPExpression); err != nil {
 			return err
 		}
@@ -116,13 +108,7 @@ func validateRouting(value RoutingConfiguration, services []Service, outbounds [
 		if err := validateRoutingStringList(rule.Domains, field+".domains", validateRoutingDomainExpression); err != nil {
 			return err
 		}
-		if err := validateRoutingPorts(rule.SourcePort, field+".source_port"); err != nil {
-			return err
-		}
 		if err := validateRoutingPorts(rule.DestinationPort, field+".destination_port"); err != nil {
-			return err
-		}
-		if err := validateRoutingPorts(rule.VLESSRoute, field+".vless_route"); err != nil {
 			return err
 		}
 		switch rule.Network {
@@ -133,16 +119,34 @@ func validateRouting(value RoutingConfiguration, services []Service, outbounds [
 		if err := validateRoutingProtocols(rule.Protocols, field+".protocols"); err != nil {
 			return err
 		}
-		if err := validateRoutingPlainValues(rule.Users, field+".users"); err != nil {
+		if err := validateRoutingStringList(rule.AuthorizationIDs, field+".authorization_ids", func(value string) error {
+			if !authorizationIDPattern.MatchString(value) {
+				return fmt.Errorf("invalid authorization ID")
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-		if err := validateRoutingInboundTags(rule.InboundTags, serviceIDs, field+".inbound_tags"); err != nil {
+		if err := validateRoutingInboundTags(rule.ServiceIDs, serviceIDs, field+".service_ids"); err != nil {
 			return err
 		}
-		if err := validateRoutingAttributes(rule.Attributes, field+".attributes"); err != nil {
-			return err
+		switch rule.Action {
+		case AccessActionBlock:
+			if rule.EgressLineID != "" {
+				return fmt.Errorf("%s.egress_line_id: must be empty for block action", field)
+			}
+		case AccessActionEgress:
+			line, exists := egressLines[rule.EgressLineID]
+			if !exists {
+				return fmt.Errorf("%s.egress_line_id: unknown egress line", field)
+			}
+			if rule.Enabled && !line.Enabled {
+				return fmt.Errorf("%s.egress_line_id: enabled rule requires an enabled egress line", field)
+			}
+		default:
+			return fmt.Errorf("%s.action: must be block or egress", field)
 		}
-		if routingRuleConditionCount(rule) == 0 {
+		if accessRuleConditionCount(rule) == 0 {
 			return fmt.Errorf("%s: must contain at least one match field", field)
 		}
 		if compareVersions(xrayVersion, MinimumVLESSXrayVersion) < 0 && routingRuleUsesGeodata(rule) {
@@ -152,10 +156,9 @@ func validateRouting(value RoutingConfiguration, services []Service, outbounds [
 	return nil
 }
 
-func routingRuleConditionCount(rule RoutingRule) int {
-	return len(rule.SourceIPs) + len(rule.Protocols) + len(rule.Attributes) +
-		len(rule.DestinationIPs) + len(rule.Domains) + len(rule.Users) + len(rule.InboundTags) +
-		boolInt(rule.SourcePort != "") + boolInt(rule.VLESSRoute != "") +
+func accessRuleConditionCount(rule AccessRule) int {
+	return len(rule.SourceIPs) + len(rule.Protocols) +
+		len(rule.DestinationIPs) + len(rule.Domains) + len(rule.AuthorizationIDs) + len(rule.ServiceIDs) +
 		boolInt(rule.Network != "") + boolInt(rule.DestinationPort != "")
 }
 
@@ -166,7 +169,7 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func routingRuleUsesGeodata(rule RoutingRule) bool {
+func routingRuleUsesGeodata(rule AccessRule) bool {
 	for _, value := range rule.Domains {
 		parsed, _ := ParseRoutingDomainExpression(value)
 		if parsed.GeoFile != "" {
@@ -416,21 +419,16 @@ func validateRoutingText(value string) error {
 	return nil
 }
 
-func cloneRouting(value RoutingConfiguration) RoutingConfiguration {
-	rules := make([]RoutingRule, len(value.Rules))
-	for index, rule := range value.Rules {
+func cloneAccessRules(values []AccessRule) []AccessRule {
+	rules := make([]AccessRule, len(values))
+	for index, rule := range values {
 		rule.SourceIPs = append([]string{}, rule.SourceIPs...)
 		rule.Protocols = append([]string{}, rule.Protocols...)
 		rule.DestinationIPs = append([]string{}, rule.DestinationIPs...)
 		rule.Domains = append([]string{}, rule.Domains...)
-		rule.Users = append([]string{}, rule.Users...)
-		rule.InboundTags = append([]string{}, rule.InboundTags...)
-		rule.Attributes = make(map[string]string, len(rule.Attributes))
-		for key, value := range value.Rules[index].Attributes {
-			rule.Attributes[key] = value
-		}
+		rule.AuthorizationIDs = append([]string{}, rule.AuthorizationIDs...)
+		rule.ServiceIDs = append([]string{}, rule.ServiceIDs...)
 		rules[index] = rule
 	}
-	value.Rules = rules
-	return value
+	return rules
 }

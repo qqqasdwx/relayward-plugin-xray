@@ -70,17 +70,12 @@ func configuredListeners(configuration config.Configuration) []ListenerStatus {
 			continue
 		}
 		networks := []string{"tcp"}
-		if service.Type == config.ServiceTypeShadowsocks && service.Shadowsocks != nil {
-			switch service.Shadowsocks.Network {
-			case "udp":
-				networks = []string{"udp"}
-			case "tcp,udp":
-				networks = []string{"tcp", "udp"}
-			}
+		if service.Type == config.ServiceTypeShadowsocks {
+			networks = []string{"tcp", "udp"}
 		}
 		for _, network := range networks {
 			result = append(result, ListenerStatus{
-				ServiceID: service.ServiceID, Network: network, ListenAddress: service.Listen, Port: service.Port,
+				ServiceID: service.ServiceID, Network: network, ListenAddress: "0.0.0.0", Port: service.Port,
 			})
 		}
 	}
