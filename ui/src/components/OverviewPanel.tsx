@@ -1,4 +1,4 @@
-import { Activity, CircleCheck, CircleX, Network, Route, Send, ShieldAlert } from "lucide-react"
+import { Activity, CircleX, Network, Route, Send, ShieldAlert } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { firewallCommand, probeReasonMessage } from "@/diagnosticsPresentation"
@@ -65,15 +65,16 @@ function PublicEndpointStatus({ diagnostic, endpoint, t }: { diagnostic: Service
     <div className="grid gap-3 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          {reachable ? <CircleCheck className="size-4 shrink-0 text-success" /> : unreachable ? <CircleX className="size-4 shrink-0 text-destructive" /> : <Network className="size-4 shrink-0 text-muted-foreground" />}
+          {reachable ? <Network className="size-4 shrink-0 text-primary" /> : unreachable ? <CircleX className="size-4 shrink-0 text-destructive" /> : <Network className="size-4 shrink-0 text-muted-foreground" />}
           <strong className="truncate">{endpoint.display_name}</strong>
           <span className="truncate text-muted-foreground">{endpoint.address ? `${endpoint.address}:${endpoint.port}` : t("Address unavailable")}</span>
         </div>
+        {reachable ? <p className="mt-1 pl-6 text-muted-foreground">{t("A successful TCP connection does not verify that traffic reached the node or that the proxy protocol works.")}</p> : null}
         {endpoint.reason ? <p className="mt-1 pl-6 text-muted-foreground">{t(probeReasonMessage(endpoint.reason))}</p> : null}
         {command ? <div className="mt-3 ml-6 grid gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3"><p className="flex items-start gap-2"><ShieldAlert className="mt-0.5 size-4 shrink-0 text-destructive" /><span>{t("Check the cloud firewall, NAT mapping, and host firewall.")}</span></p><code className="w-fit max-w-full overflow-x-auto rounded bg-background px-2 py-1 font-mono text-xs text-foreground">{command}</code></div> : null}
       </div>
-      <Badge variant={unreachable ? "destructive" : reachable ? "outline" : "secondary"} className={reachable ? "border-success/30 bg-success-soft text-success" : undefined}>
-        {t(reachable ? "Publicly reachable" : unreachable ? "Publicly unreachable" : "Not tested")}
+      <Badge variant={unreachable ? "destructive" : reachable ? "outline" : "secondary"}>
+        {t(reachable ? "TCP connection accepted" : unreachable ? "TCP connection failed" : "Not tested")}
       </Badge>
     </div>
   )
