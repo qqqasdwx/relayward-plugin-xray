@@ -85,7 +85,9 @@ func TestRenderManagedServicesAndEgressLines(t *testing.T) {
 	if ssOutbound["protocol"] != "shadowsocks" || ssOutbound["settings"].(map[string]any)["password"] != "server-password" {
 		t.Fatalf("Shadowsocks outbound = %+v", ssOutbound)
 	}
-	if findTagged(t, rendered.Outbounds, SystemDirectOutboundTag)["protocol"] != "freedom" ||
+	systemDirect := findTagged(t, rendered.Outbounds, SystemDirectOutboundTag)
+	if systemDirect["protocol"] != "freedom" ||
+		systemDirect["settings"].(map[string]any)["domainStrategy"] != "AsIs" ||
 		findTagged(t, rendered.Outbounds, BlockedOutboundTag)["protocol"] != "blackhole" {
 		t.Fatalf("managed outbounds = %+v", rendered.Outbounds)
 	}

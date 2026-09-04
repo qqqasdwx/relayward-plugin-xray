@@ -98,7 +98,7 @@ func renderOutbounds(lines []config.EgressLine) ([]any, error) {
 		result = append(result, outbound)
 	}
 	result = append(result,
-		map[string]any{"tag": SystemDirectOutboundTag, "protocol": "freedom", "settings": map[string]any{"domainStrategy": "UseIP"}},
+		map[string]any{"tag": SystemDirectOutboundTag, "protocol": "freedom", "settings": map[string]any{"domainStrategy": "AsIs"}},
 		map[string]any{"tag": BlockedOutboundTag, "protocol": "blackhole", "settings": map[string]any{}},
 	)
 	return result, nil
