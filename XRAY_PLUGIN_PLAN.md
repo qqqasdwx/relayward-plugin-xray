@@ -168,7 +168,7 @@ VLESS 订阅 UUID 编码线路 route；Xray 在用户匹配前提取该值，并
 
 ### 阶段 5：发布制品与真实节点验收
 
-状态：进行中。正式 Agent 与插件的 Debian、Alpine 基础数据面和部分控制行为已验证；完整矩阵尚未完成，见 [正式制品验收记录](ACCEPTANCE.md)。
+状态：现有环境的限定范围验收完成。正式制品已验证基础 TCP/UDP、出口、规则、授权限制和异常恢复，并完成小规模资源采样；公网 IPv6 等未覆盖项保持未验收，见 [正式制品验收记录](ACCEPTANCE.md)。
 
 - 使用正式 release artifact 在 Debian/systemd 与低资源 Alpine/OpenRC 节点部署。
 - 验证真实 VLESS、Shadowsocks、IPv4/IPv6 指定出口、SOCKS5/SS 出口和访问规则。
