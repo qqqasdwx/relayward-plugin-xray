@@ -41,17 +41,18 @@ func TestOfficialXrayAccessAndLoggerRotation(t *testing.T) {
 	serverPort, clientPort, apiPort := port(), port(), port()
 	const credential = "30000000-0000-4000-8000-000000000001"
 	serverConfig := map[string]any{
-		"log": map[string]any{"access": accessPath, "loglevel": "warning"},
+		"log": map[string]any{"access": accessPath, "loglevel": "debug"},
 		"api": map[string]any{"tag": "api", "services": []string{"LoggerService"}},
 		"inbounds": []any{
 			map[string]any{"tag": testServiceID, "listen": "127.0.0.1", "port": serverPort, "protocol": "vless", "settings": map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": credential, "email": "relayward:10000000-0000-4000-8000-000000000001:vless-reality"}}}},
 			map[string]any{"tag": "api", "listen": "127.0.0.1", "port": apiPort, "protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"}},
 		},
-		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}},
+		// This fixture connects to a loopback HTTP server; Freedom blocks loopback by default.
+		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow"}}}}},
 		"routing":   map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"}}},
 	}
 	clientConfig := map[string]any{
-		"log":       map[string]any{"loglevel": "warning"},
+		"log":       map[string]any{"loglevel": "debug"},
 		"inbounds":  []any{map[string]any{"listen": "127.0.0.1", "port": clientPort, "protocol": "socks", "settings": map[string]any{"auth": "noauth"}}},
 		"outbounds": []any{map[string]any{"protocol": "vless", "settings": map[string]any{"vnext": []any{map[string]any{"address": "127.0.0.1", "port": serverPort, "users": []any{map[string]any{"id": credential, "encryption": "none"}}}}}}},
 	}
@@ -64,9 +65,15 @@ func TestOfficialXrayAccessAndLoggerRotation(t *testing.T) {
 		if err = os.WriteFile(path, raw, 0600); err != nil {
 			t.Fatal(err)
 		}
+		outputPath := filepath.Join(directory, name+".process.log")
+		output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = output.Close() })
 		cmd := exec.Command(binary, "run", "-config", path)
-		cmd.Stdout = io.Discard
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = output
+		cmd.Stderr = output
 		if err = cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -77,6 +84,14 @@ func TestOfficialXrayAccessAndLoggerRotation(t *testing.T) {
 				_ = cmd.Process.Kill()
 			}
 			<-done
+			if t.Failed() {
+				log, err := os.ReadFile(outputPath)
+				if err != nil {
+					t.Errorf("read %s process output: %v", name, err)
+				} else {
+					t.Logf("%s process output:\n%s", name, log)
+				}
+			}
 		})
 	}
 	start("server", serverConfig)
