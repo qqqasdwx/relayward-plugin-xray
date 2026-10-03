@@ -137,7 +137,7 @@ func TestManagerIgnoresLegacyConfigurationCacheKeyDuringUpgrade(t *testing.T) {
 	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
 		t.Fatalf("Apply() with legacy cache error = %v", err)
 	}
-	raw, err := xrayconfig.Render(configuration)
+	raw, err := manager.render(configuration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,6 +557,13 @@ while :; do sleep 1; done
 		t.Fatal(err)
 	}
 	manager.startupGrace = 50 * time.Millisecond
+	logDirectory := filepath.Join(directory, "xray", "access")
+	if err := os.MkdirAll(logDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDirectory, "current.log"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) {
 		return &fakeRuntimeAPI{}, nil
 	}

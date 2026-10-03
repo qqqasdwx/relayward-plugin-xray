@@ -194,6 +194,11 @@ func (manager *Manager) CollectActivity(ctx context.Context, after uint64, maxim
 	if spec == nil || process == nil || process.exited() || process.api == nil {
 		return ActivityPage{}, ErrRuntimeUnavailable
 	}
+	if !spec.configuration.DisableAccessLog {
+		if err := manager.collectAccess(ctx, process, spec.configuration); err != nil {
+			return ActivityPage{}, err
+		}
+	}
 	active := make(map[string]ActivitySource)
 	for _, service := range manager.services {
 		configured, exists := spec.configuration.FindService(service.serviceID)
@@ -212,7 +217,14 @@ func (manager *Manager) CollectActivity(ctx context.Context, after uint64, maxim
 			}
 		}
 	}
-	return manager.telemetry.appendSnapshot(after, maximum, active, time.Now().UTC())
+	page, err := manager.telemetry.appendSnapshot(after, maximum, active, time.Now().UTC())
+	page.CollectionStatus = "collecting"
+	if spec.configuration.DisableAccessLog {
+		page.CollectionStatus = "disabled"
+	} else if manager.telemetry.collectionGap() {
+		page.CollectionStatus = "incomplete"
+	}
+	return page, err
 }
 
 func (manager *Manager) ApplyDynamicBlocks(ctx context.Context, policyGeneration, blockRevision uint64, blocks []DynamicBlock) error {

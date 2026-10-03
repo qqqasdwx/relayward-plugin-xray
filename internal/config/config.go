@@ -36,19 +36,21 @@ const (
 var serviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 type Configuration struct {
-	XrayVersion    string       `json:"xray_version"`
-	APIPort        uint16       `json:"api_port"`
-	CredentialSeed string       `json:"credential_seed"`
-	Services       []Service    `json:"services"`
-	EgressLines    []EgressLine `json:"egress_lines"`
-	AccessRules    []AccessRule `json:"access_rules"`
+	DisableAccessLog bool         `json:"disable_access_log,omitempty"`
+	XrayVersion      string       `json:"xray_version"`
+	APIPort          uint16       `json:"api_port"`
+	CredentialSeed   string       `json:"credential_seed"`
+	Services         []Service    `json:"services"`
+	EgressLines      []EgressLine `json:"egress_lines"`
+	AccessRules      []AccessRule `json:"access_rules"`
 }
 
 type EditableConfiguration struct {
-	XrayVersion string               `json:"xray_version"`
-	Services    []EditableService    `json:"services"`
-	EgressLines []EditableEgressLine `json:"egress_lines"`
-	AccessRules []AccessRule         `json:"access_rules"`
+	DisableAccessLog bool                 `json:"disable_access_log,omitempty"`
+	XrayVersion      string               `json:"xray_version"`
+	Services         []EditableService    `json:"services"`
+	EgressLines      []EditableEgressLine `json:"egress_lines"`
+	AccessRules      []AccessRule         `json:"access_rules"`
 }
 
 func Editable(value Configuration) EditableConfiguration {
@@ -61,10 +63,11 @@ func Editable(value Configuration) EditableConfiguration {
 		lines[index] = editableEgressLine(line)
 	}
 	return EditableConfiguration{
-		XrayVersion: value.XrayVersion,
-		Services:    services,
-		EgressLines: lines,
-		AccessRules: cloneAccessRules(value.AccessRules),
+		DisableAccessLog: value.DisableAccessLog,
+		XrayVersion:      value.XrayVersion,
+		Services:         services,
+		EgressLines:      lines,
+		AccessRules:      cloneAccessRules(value.AccessRules),
 	}
 }
 
@@ -85,6 +88,7 @@ func NewFromEditable(value EditableConfiguration) (Configuration, error) {
 }
 
 func MergeEditable(configuration Configuration, value EditableConfiguration) (Configuration, error) {
+	configuration.DisableAccessLog = value.DisableAccessLog
 	existingServices := make(map[string]Service, len(configuration.Services))
 	for _, service := range configuration.Services {
 		existingServices[service.ServiceID] = service

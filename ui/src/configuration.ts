@@ -77,6 +77,7 @@ export function configurationsEqual(first: EditableConfiguration, second: Editab
 
 export function cloneConfiguration(value: EditableConfiguration): EditableConfiguration {
   return {
+    disable_access_log: value.disable_access_log === true,
     xray_version: value.xray_version,
     services: value.services.map((service) => ({ ...service, vless_reality: service.vless_reality == null ? undefined : { ...service.vless_reality }, shadowsocks: service.shadowsocks == null ? undefined : { ...service.shadowsocks } })),
     egress_lines: value.egress_lines.map((line) => ({ ...line, direct: line.direct == null ? undefined : { ...line.direct }, socks5: line.socks5 == null ? undefined : { ...line.socks5 }, shadowsocks: line.shadowsocks == null ? undefined : { ...line.shadowsocks } })),

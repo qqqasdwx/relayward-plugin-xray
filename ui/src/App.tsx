@@ -241,6 +241,7 @@ function Actions({ stored, dirty, busy, saving, t, onRefresh }: { stored: Stored
 function summarizeChanges(before: EditableConfiguration, after: EditableConfiguration, t: ReturnType<typeof translator>): string {
   const parts = [t("The following changes will be published:")]
   if (before.xray_version !== after.xray_version) parts.push(`• ${t("Xray version")}: ${before.xray_version} → ${after.xray_version}`)
+  if (Boolean(before.disable_access_log) !== Boolean(after.disable_access_log)) parts.push(`• ${t("Detailed access collection")}: ${t(after.disable_access_log ? "Disabled status" : "Enabled")}`)
   appendEntityChanges(parts, t("Inbounds"), before.services, after.services, (item) => item.service_id, (item) => item.display_name, t)
   appendEntityChanges(parts, t("Egress lines"), before.egress_lines, after.egress_lines, (item) => item.line_id, (item) => item.display_name, t)
   appendEntityChanges(parts, t("Access rules"), before.access_rules, after.access_rules, (item) => item.rule_id, (item) => item.display_name, t)

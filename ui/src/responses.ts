@@ -96,6 +96,7 @@ export function parseProbe(value: unknown): EgressProbe {
 function parseConfiguration(value: unknown): EditableConfiguration {
   const record = object(value)
   return {
+    disable_access_log: record.disable_access_log === true,
     xray_version: string(record.xray_version),
     services: array(record.services).map(parseService),
     egress_lines: array(record.egress_lines).map(parseEgressLine),

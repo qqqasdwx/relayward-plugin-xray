@@ -71,8 +71,8 @@ func Render(value config.Configuration) ([]byte, error) {
 		return nil, err
 	}
 	result := map[string]any{
-		"log":       map[string]any{"loglevel": "warning"},
-		"api":       map[string]any{"tag": APIRuleTag, "services": []string{"HandlerService", "RoutingService", "StatsService"}},
+		"log":       map[string]any{"loglevel": "warning", "access": "none"},
+		"api":       map[string]any{"tag": APIRuleTag, "services": []string{"HandlerService", "RoutingService", "StatsService", "LoggerService"}},
 		"dns":       map[string]any{"servers": []string{"localhost"}, "queryStrategy": "UseIP"},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
@@ -81,6 +81,9 @@ func Render(value config.Configuration) ([]byte, error) {
 		}}},
 		"routing": map[string]any{"domainStrategy": "IPIfNonMatch", "rules": renderRoutingRules(routingRules)},
 		"stats":   map[string]any{},
+	}
+	if !value.DisableAccessLog {
+		result["log"].(map[string]any)["access"] = "access.log"
 	}
 	return json.Marshal(result)
 }

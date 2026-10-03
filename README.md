@@ -79,6 +79,14 @@ VLESS 固定使用 RAW、REALITY、Vision 和 route-only 的 HTTP/TLS/QUIC 嗅�
 
 节点插件从官方 `XTLS/Xray-core` Release 下载 `Xray-linux-64.zip`。插件只接受具有有效 GitHub SHA-256 digest、大小在限制内且下载地址与官方 tag 完全一致的制品。Xray 不包含在本插件的 Release 中。
 
+### 访问采集
+
+节点默认开启详细访问采集，可在 **运行时 → 详细访问采集** 中停用。托管授权的 Xray access 记录被转换成 `connection` 事件；在线 IP 快照单独标记为 `activity`，用于本地 IP 限制，不代表逐次访问。内部 API、出口探测和未认证的 REALITY 回落流量不计入用户连接。
+
+文件偏移和待发送事件在同一私有状态文件中提交，重启后继续读取。日志在采集时达到 16 MiB 后轮转，通过 LoggerService 重新打开；原始日志使用 64 MiB 磁盘预算，检查时超预算的数据会截断并明确上报缺失。预算是周期检查限制，突发写入可在检查间隔内暂时超过预算。已入队的日志消费完成后删除，队列满时保留未读取数据并报告不完整；丢失标记保持 24 小时。
+
+采集状态为 `collecting`、`disabled` 或 `incomplete`，由 Agent 独立上报。日志通常没有完整 URL 或可靠的嗅探协议；目标 IP 不会被猜测为域名。原始日志和事件不得写入应用信息日志。
+
 ### 开发
 
 ```sh
@@ -142,7 +150,13 @@ Open an online node's Xray page, select an official Xray version, configure inbo
 
 Relayward and this plugin do not change host or provider firewalls, NAT mappings, or relay configuration. Those paths must expose the configured public ports independently.
 
-### Development
+### Access collection
+
+Detailed access collection is enabled by default and can be disabled in **Runtime**. Managed Xray access records become `connection` observations; online-IP snapshots are `activity` observations for local IP enforcement. Internal API traffic, egress probes and unauthenticated REALITY fallback traffic are excluded.
+
+Log offsets and queued events commit together. Collection rotates files at 16 MiB using LoggerService and enforces a 64 MiB raw-log budget at polling time. Bursts can exceed the budget between polls. Over-budget data is truncated with an explicit 24-hour gap marker; unread backlog reports incomplete coverage. Collection reports `collecting`, `disabled` or `incomplete` independently of access events. Logs do not provide full URLs or reliable sniffed protocols, and source logs remain private.
+
+### Development commands
 
 Use the commands in the Chinese development section above. Release bundles contain the manifest, separate Linux AMD64 center and node binaries, the sandboxed UI archive, and `SHA256SUMS`. Xray itself is downloaded from official `XTLS/Xray-core` releases and is not bundled.
 

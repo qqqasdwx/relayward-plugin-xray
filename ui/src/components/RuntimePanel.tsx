@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge"
 import { Combobox } from "@/components/ui/combobox"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import type { Translator } from "@/i18n"
 import type { EditableConfiguration, NetworkAddress, StoredConfiguration, XrayVersion } from "@/types"
 
@@ -10,6 +11,7 @@ export function RuntimePanel({ value, stored, addresses, versions, versionError,
 }) {
   return (
     <div className="grid min-w-0 gap-6">
+      <div className="flex items-center justify-between gap-4"><Label htmlFor="access-collection">{t("Detailed access collection")}</Label><Switch id="access-collection" checked={!value.disable_access_log} disabled={busy} onCheckedChange={(enabled) => onChange({ ...value, disable_access_log: !enabled })} /></div>
       <div><h2 className="font-semibold">{t("Runtime")}</h2><p className="text-sm text-muted-foreground">{t("Xray release and node runtime state")}</p></div>
       <div className="grid gap-4 md:grid-cols-2">
         <div className="grid gap-2"><Label htmlFor="xray-version">{t("Xray version")}</Label><Combobox id="xray-version" value={value.xray_version} options={versionOptions(versions, value.xray_version, t)} searchPlaceholder={t("Search Xray versions")} emptyText={t("No matching versions")} required disabled={busy || versions.length === 0} onValueChange={(xray_version) => onChange({ ...value, xray_version })} />{versionError ? <p className="text-sm text-destructive" role="alert">{versionError}</p> : null}</div>

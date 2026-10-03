@@ -1,6 +1,7 @@
 import type { Locale } from "@/types"
 
 const zhCN: Record<string, string> = {
+  "Detailed access collection": "详细访问采集",
   "Overview": "概览", "Inbounds": "入站", "Egress lines": "出口线路", "Access rules": "访问规则", "Runtime": "运行时",
   "Xray configuration": "Xray 配置", "Refresh": "刷新", "Save configuration": "保存配置", "Saving...": "正在保存...",
   "Loading...": "正在加载...", "Not configured": "尚未配置", "Generation {generation}": "第 {generation} 代配置",

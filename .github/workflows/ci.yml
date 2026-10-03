@@ -41,7 +41,30 @@ jobs:
       - run: npm test
         working-directory: ui
       - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
       - run: shellcheck scripts/build-release.sh
       - run: ./scripts/build-release.sh 0.0.0-ci /tmp/relayward-plugin-xray-release
       - run: cd /tmp/relayward-plugin-xray-release && sha256sum -c SHA256SUMS
+  official-access:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+          cache: true
+      - uses: actions/cache@v5
+        id: xray
+        with:
+          path: /tmp/official-xray
+          key: official-xray-linux-amd64-26.7.28
+      - if: steps.xray.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/official-xray
+          curl -fL --retry 2 https://github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip -o /tmp/official-xray/xray.zip
+          unzip -q /tmp/official-xray/xray.zip -d /tmp/official-xray
+          chmod +x /tmp/official-xray/xray
+      - run: go test ./internal/xrayruntime -run '^TestOfficialXrayAccessAndLoggerRotation$' -count=1 -timeout=30s
+        env:
+          XRAY_INTEGRATION_BINARY: /tmp/official-xray/xray

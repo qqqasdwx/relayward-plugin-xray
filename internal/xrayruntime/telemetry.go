@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
 )
 
 const (
@@ -44,12 +46,18 @@ type ActivityEvent struct {
 	AuthorizationID string `json:"authorization_id"`
 	ServiceID       string `json:"service_id"`
 	SourceIP        string `json:"source_ip"`
+	Destination     string `json:"destination,omitempty"`
+	DestinationPort uint32 `json:"destination_port,omitempty"`
+	Network         string `json:"network,omitempty"`
+	Action          string `json:"action,omitempty"`
+	ObservationKind string `json:"observation_kind,omitempty"`
 }
 
 type ActivityPage struct {
-	Events       []ActivityEvent
-	NextSequence uint64
-	HasMore      bool
+	Events           []ActivityEvent
+	NextSequence     uint64
+	HasMore          bool
+	CollectionStatus string
 }
 
 type telemetryState struct {
@@ -59,6 +67,9 @@ type telemetryState struct {
 	LastSequence         uint64           `json:"last_sequence"`
 	Events               []ActivityEvent  `json:"events"`
 	LastReported         map[string]int64 `json:"last_reported"`
+	LogOffsets           map[string]int64 `json:"log_offsets,omitempty"`
+	CollectionGapAt      int64            `json:"collection_gap_at,omitempty"`
+	CollectionBacklog    bool             `json:"collection_backlog,omitempty"`
 }
 
 type telemetryStore struct {
@@ -122,14 +133,23 @@ func (store *telemetryStore) appendSnapshot(after uint64, maximum uint32, active
 			nextReported[key] = lastReported
 			continue
 		}
-		if len(current.Events) >= maximumQueuedActivity || current.LastSequence >= math.MaxInt64 {
+		if len(current.Events) >= maximumQueuedActivity {
+			if len(store.state.Events) == 0 && after == 0 {
+				return ActivityPage{}, ErrTelemetryFull
+			}
+			if lastReported != 0 {
+				nextReported[key] = lastReported
+			}
+			continue
+		}
+		if current.LastSequence >= math.MaxInt64 {
 			return ActivityPage{}, ErrTelemetryFull
 		}
 		current.LastSequence++
 		current.Events = append(current.Events, ActivityEvent{
 			Sequence: current.LastSequence, EventID: fmt.Sprintf("online-%d", current.LastSequence),
 			ObservedAt: now.UTC().UnixNano(), AuthorizationID: source.AuthorizationID,
-			ServiceID: source.ServiceID, SourceIP: source.SourceIP,
+			ServiceID: source.ServiceID, SourceIP: source.SourceIP, ObservationKind: agentv1.ObservationActivity,
 		})
 		nextReported[key] = now.UTC().UnixNano()
 		changed = true
@@ -248,10 +268,18 @@ func validateTelemetryState(state telemetryState) error {
 		return errors.New("telemetry state contains a sequence gap")
 	}
 	for index, event := range state.Events {
+		if event.ObservationKind != "" && event.ObservationKind != agentv1.ObservationActivity && event.ObservationKind != agentv1.ObservationConnection {
+			return errors.New("invalid stored observation kind")
+		}
 		expected := state.AcknowledgedSequence + uint64(index) + 1
-		if event.Sequence != expected || event.EventID != fmt.Sprintf("online-%d", expected) || event.ObservedAt <= 0 ||
+		if event.Sequence != expected || (event.EventID != fmt.Sprintf("online-%d", expected) && event.EventID != fmt.Sprintf("access-%d", expected)) || event.ObservedAt <= 0 ||
 			event.AuthorizationID == "" || event.ServiceID == "" || !canonicalIP(event.SourceIP) {
 			return errors.New("telemetry state contains an invalid activity event")
+		}
+		if event.ObservationKind == agentv1.ObservationConnection {
+			if err := agentv1.ValidateAccessEvent(agentv1.AccessEvent{SourceStreamID: state.StreamID, SourceEventID: event.EventID, PluginID: "io.github.qqqasdwx.relayward-xray", ServiceID: event.ServiceID, AuthorizationID: event.AuthorizationID, SourceIP: event.SourceIP, Destination: event.Destination, DestinationPort: event.DestinationPort, Network: event.Network, Action: event.Action, ObservationKind: event.ObservationKind}); err != nil {
+				return errors.New("invalid stored connection observation")
+			}
 		}
 	}
 	if state.LastReported == nil {
@@ -270,6 +298,10 @@ func cloneTelemetryState(value telemetryState) telemetryState {
 	result := value
 	result.Events = append([]ActivityEvent(nil), value.Events...)
 	result.LastReported = make(map[string]int64, len(value.LastReported))
+	result.LogOffsets = make(map[string]int64, len(value.LogOffsets))
+	for key, offset := range value.LogOffsets {
+		result.LogOffsets[key] = offset
+	}
 	for key, observedAt := range value.LastReported {
 		result.LastReported[key] = observedAt
 	}

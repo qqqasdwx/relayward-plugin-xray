@@ -56,6 +56,7 @@ export interface AccessRule {
 }
 
 export interface EditableConfiguration {
+  disable_access_log?: boolean
   xray_version: string
   services: ProxyService[]
   egress_lines: EgressLine[]

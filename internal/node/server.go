@@ -154,6 +154,7 @@ func (server *Server) CollectTelemetry(ctx context.Context, request *nodepluginv
 		Events:             make([]*nodepluginv1.AccessEvent, len(activity.Events)),
 		NextSequence:       activity.NextSequence,
 		HasMore:            activity.HasMore,
+		CollectionStatus:   activity.CollectionStatus,
 	}
 	for index, value := range values {
 		response.Counters[index] = &nodepluginv1.TrafficCounter{
@@ -168,7 +169,12 @@ func (server *Server) CollectTelemetry(ctx context.Context, request *nodepluginv
 		response.Events[index] = &nodepluginv1.AccessEvent{
 			Sequence: value.Sequence, EventId: value.EventID, ObservedAtUnixNano: value.ObservedAt,
 			AuthorizationId: value.AuthorizationID, ServiceId: value.ServiceID,
-			SourceIp: value.SourceIP, Action: agentv1.AccessActionAccepted,
+			SourceIp: value.SourceIP, Action: agentv1.AccessActionAccepted, ObservationKind: value.ObservationKind,
+			Destination: value.Destination, DestinationPort: value.DestinationPort, Network: value.Network,
+		}
+		if value.ObservationKind == agentv1.ObservationConnection {
+			response.Events[index].ObservationKind = value.ObservationKind
+			response.Events[index].Action = value.Action
 		}
 	}
 	if err := nodepluginv1.ValidateCollectTelemetryResponse(request, response); err != nil {
